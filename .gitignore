@@ -1,0 +1,15 @@
+# Rust / Cargo
+/target
+Cargo.lock
+
+# Gemini CLI / AI Metadata
+.gemini/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.swp
+*.bak
+*~
