@@ -14,44 +14,16 @@
 
 //! # anotro-rs
 //!
-//! A Rust environment with chromaprint and clap, configured with strict Clippy lints.
-//! It supports MKV and MP4 containers and AAC, FLAC, MP3, OPUS, and VORBIS audio codecs.
+//! A Rust CLI application for audio fingerprinting and matching.
 
+use anatro_rs::cli::{Cli, Commands};
+use anatro_rs::domain::pipeline::SourceMedia;
+use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
+use anatro_rs::infrastructure::ffmpeg::FfmpegAdapter;
 use anyhow::Result;
-use chromaprint::Chromaprint;
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
-
-/// The main command line interface for anotro-rs.
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct Cli {
-    /// The subcommand to execute.
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
-/// The available subcommands for the application.
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Scans a target media file to identify intro and outro sections.
-    ///
-    /// NOTE: This command assumes that `intro_sample.(ext)` and `outro_sample.(ext)`
-    /// exist in the current directory. The `(ext)` should be one of the supported
-    /// audio codecs (AAC, FLAC, MP3, OPUS, VORBIS). These samples are used as the
-    /// reference fingerprints for the scan.
-    Scan {
-        /// The path to the media file to process (e.g., an MKV or MP4 episode).
-        #[arg(short = 's', long = "sample", value_name = "FILE")]
-        sample: PathBuf,
-    },
-}
+use clap::Parser;
 
 /// The main entry point of the application.
-///
-/// # Errors
-///
-/// Returns an error if the argument parsing fails or if there is an issue with Chromaprint or FFmpeg.
 pub fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -62,46 +34,39 @@ pub fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan { sample } => {
+            let ffmpeg = FfmpegAdapter::new();
+            let chromaprint = ChromaprintAdapter::new();
+
             #[allow(unused_results)]
             {
-                println!("Initializing scan for file: {}", sample.display());
+                println!("Processing media file: {}", sample.display());
+            }
+
+            let source = SourceMedia::new(sample);
+
+            // Pipeline execution:
+            // 1. Extract Audio (includes track selection and mono/downsampling)
+            let extracted = source.extract_audio(&ffmpeg)?;
+
+            #[allow(unused_results)]
+            {
                 println!(
-                    "NOTE: Assuming `intro_sample.(ext)` and `outro_sample.(ext)` are present in the directory."
+                    "Audio extracted successfully ({} samples).",
+                    extracted.buffer().samples().len()
                 );
             }
 
-            // Placeholder for Typestate pattern execution:
-            // 1. Initialize Ports (FFmpeg extraction adapter, Chromaprint generation adapter).
-            // 2. let initial_state = ExtractionState::new(sample);
-            // 3. let fingerprint_state = initial_state.extract_audio()?;
-            // 4. let matching_state = fingerprint_state.generate_fingerprints()?;
-            // 5. let result = matching_state.find_matches(intro_ref, outro_ref)?;
+            // 2. Generate Fingerprint
+            let fingerprinted = extracted.generate_fingerprint(&chromaprint)?;
 
             #[allow(unused_results)]
             {
-                println!("Scan placeholder logic executed successfully.");
+                println!(
+                    "Fingerprint generated successfully ({} hashes).",
+                    fingerprinted.fingerprint().len()
+                );
             }
         }
-    }
-
-    let version = Chromaprint::version();
-    #[allow(unused_results)]
-    {
-        println!("Chromaprint version: {}", version);
-    }
-
-    // Verify FFmpeg initialization
-    ffmpeg_next::init()?;
-    #[allow(unused_results)]
-    {
-        println!("FFmpeg initialized.");
-    }
-
-    // Verify Rayon (just a simple parallel check)
-    let _ = rayon::join(|| (), || ());
-    #[allow(unused_results)]
-    {
-        println!("Rayon initialized.");
     }
 
     Ok(())
