@@ -21,6 +21,10 @@
 * **Minimalism:** Keep the dependency tree lean to reduce compile times and security surface.
 * **Security:** Use `cargo audit` regularly to identify and mitigate known vulnerabilities in crates.
 
+### 5. Supported Formats
+* **Containers:** The application must support `MKV` and `MP4` containers.
+* **Audio Codecs:** Supported audio codecs include `AAC`, `FLAC`, `MP3`, `OPUS`, and `VORBIS`.
+
 ### Commit Guidelines
 
 Follow the [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/) specification:

@@ -33,7 +33,7 @@ pub struct Args {
 ///
 /// # Errors
 ///
-/// Returns an error if the argument parsing fails or if there is an issue with Chromaprint.
+/// Returns an error if the argument parsing fails or if there is an issue with Chromaprint or FFmpeg.
 pub fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -53,6 +53,20 @@ pub fn main() -> Result<()> {
     #[allow(unused_results)]
     {
         println!("Chromaprint version: {}", version);
+    }
+
+    // Verify FFmpeg initialization
+    ffmpeg_next::init()?;
+    #[allow(unused_results)]
+    {
+        println!("FFmpeg initialized.");
+    }
+
+    // Verify Rayon (just a simple parallel check)
+    let _ = rayon::join(|| (), || ());
+    #[allow(unused_results)]
+    {
+        println!("Rayon initialized.");
     }
 
     Ok(())
