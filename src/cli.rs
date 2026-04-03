@@ -34,5 +34,8 @@ pub enum Commands {
         /// The timestamp range for extraction (e.g., '00:01:00-00:02:00').
         #[arg(short = 'r', long = "range", value_name = "HH:MM:SS-HH:MM:SS")]
         range: String,
+        /// The path to save the extracted sample.
+        #[arg(short = 'o', long = "output", value_name = "FILE")]
+        output: PathBuf,
     },
 }
