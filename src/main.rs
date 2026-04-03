@@ -30,8 +30,12 @@ use std::env;
 
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
-    // Initialize logging from environment variable (default to info)
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Initialize logging: default to 'info' for our app and 'warn' for noisy dependencies.
+    // This can still be overridden by setting the RUST_LOG environment variable.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,symphonia=warn"),
+    )
+    .init();
 
     let cli = Cli::parse();
 
