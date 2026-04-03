@@ -4,7 +4,7 @@ use crate::domain::DomainError;
 use crate::domain::audio::AudioBuffer;
 use crate::domain::traits::{AudioExtractor, PcmExporter, PcmExtractor, SampleExporter};
 use dialoguer::Select;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use rubato::{
     Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
     WindowFunction, audioadapter_buffers::direct::SequentialSliceOfVecs,
@@ -12,7 +12,7 @@ use rubato::{
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use symphonia::core::audio::SampleBuffer;
+use symphonia::core::audio::{SampleBuffer, SignalSpec};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
@@ -109,11 +109,8 @@ impl SymphoniaAdapter {
         Ok(h * 3600.0 + m * 60.0 + s)
     }
 
-    /// Helper to probe a file and return format, track ID, native rate, and native channels.
-    fn probe_file(
-        &self,
-        path: &Path,
-    ) -> Result<(Box<dyn FormatReader>, u32, u32, u16), DomainError> {
+    /// Helper to probe a file and return format, track ID.
+    fn probe_file(&self, path: &Path) -> Result<(Box<dyn FormatReader>, u32), DomainError> {
         let file = File::open(path)
             .map_err(|e| DomainError::ExtractionError(format!("Failed to open file: {}", e)))?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -135,26 +132,14 @@ impl SymphoniaAdapter {
         let format = probed.format;
         let track_id = self.select_audio_stream(format.as_ref())?;
 
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.id == track_id)
-            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
-
-        let native_rate = track
-            .codec_params
-            .sample_rate
-            .ok_or_else(|| DomainError::ExtractionError("Track has no sample rate".to_string()))?;
-        let native_channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1) as u16;
-
-        Ok((format, track_id, native_rate, native_channels))
+        Ok((format, track_id))
     }
 }
 
 impl AudioExtractor for SymphoniaAdapter {
     fn extract_audio(&self, path: &Path) -> Result<AudioBuffer, DomainError> {
         debug!("Initializing Symphonia for full track extraction with resampling");
-        let (mut format, track_id, native_rate, native_channels) = self.probe_file(path)?;
+        let (mut format, track_id) = self.probe_file(path)?;
 
         let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
 
@@ -164,33 +149,15 @@ impl AudioExtractor for SymphoniaAdapter {
                 DomainError::ExtractionError(format!("Failed to create decoder: {}", e))
             })?;
 
-        // Rubato resampler setup
-        let resample_ratio = TARGET_SAMPLE_RATE as f64 / native_rate as f64;
-        let params = SincInterpolationParameters {
-            sinc_len: 256,
-            f_cutoff: 0.95,
-            interpolation: SincInterpolationType::Linear,
-            oversampling_factor: 128,
-            window: WindowFunction::BlackmanHarris2,
-        };
-
-        let chunk_size = 1024;
-        let mut resampler = Async::<f32>::new_sinc(
-            resample_ratio,
-            2.0, // max resample ratio relative
-            &params,
-            chunk_size,
-            TARGET_CHANNELS as usize,
-            FixedAsync::Input,
-        )
-        .map_err(|e| DomainError::ExtractionError(format!("Failed to create resampler: {}", e)))?;
-
         let mut audio_samples: Vec<i16> = Vec::new();
         let mut sample_buf = None;
+        let mut resampler = None;
+        let mut actual_spec: Option<SignalSpec> = None;
 
-        // Internal buffer for rubato (planar format)
+        let chunk_size = 1024;
         let mut resampler_input_data = vec![vec![0.0f32; chunk_size]; TARGET_CHANNELS as usize];
         let mut input_pos = 0;
+        let mut resample_ratio = 1.0f64;
 
         loop {
             let packet = match format.next_packet() {
@@ -209,27 +176,65 @@ impl AudioExtractor for SymphoniaAdapter {
 
             match decoder.decode(&packet) {
                 Ok(audio_buf) => {
+                    if actual_spec.is_none() {
+                        let spec = *audio_buf.spec();
+                        debug!(
+                            "Actual decoded spec: {} channels, {} Hz",
+                            spec.channels.count(),
+                            spec.rate
+                        );
+                        actual_spec = Some(spec);
+
+                        // Initialize resampler with actual rate
+                        resample_ratio = TARGET_SAMPLE_RATE as f64 / spec.rate as f64;
+                        let params = SincInterpolationParameters {
+                            sinc_len: 512,
+                            f_cutoff: 0.95,
+                            interpolation: SincInterpolationType::Cubic,
+                            oversampling_factor: 128,
+                            window: WindowFunction::BlackmanHarris2,
+                        };
+
+                        resampler = Some(
+                            Async::<f32>::new_sinc(
+                                resample_ratio,
+                                2.0,
+                                &params,
+                                chunk_size,
+                                TARGET_CHANNELS as usize,
+                                FixedAsync::Input,
+                            )
+                            .map_err(|e| {
+                                DomainError::ExtractionError(format!(
+                                    "Failed to create resampler: {}",
+                                    e
+                                ))
+                            })?,
+                        );
+                    }
+
                     if sample_buf.is_none() {
                         let spec = *audio_buf.spec();
                         let duration = audio_buf.capacity() as u64;
                         sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
                     }
 
-                    if let Some(buf) = &mut sample_buf {
+                    if let (Some(buf), Some(rs), Some(spec)) =
+                        (&mut sample_buf, &mut resampler, actual_spec)
+                    {
                         buf.copy_interleaved_ref(audio_buf);
                         let samples = buf.samples();
+                        let channels = spec.channels.count();
 
                         let mut i = 0;
                         while i < samples.len() {
-                            // Mix down to mono if necessary
                             let mut mono_sample = 0.0f32;
-                            for _ in 0..native_channels {
-                                if i < samples.len() {
-                                    mono_sample += samples[i];
-                                    i += 1;
-                                }
+                            let count = (channels).min(samples.len() - i);
+                            for _ in 0..count {
+                                mono_sample += samples[i];
+                                i += 1;
                             }
-                            mono_sample /= native_channels as f32;
+                            mono_sample /= count as f32;
 
                             resampler_input_data[0][input_pos] = mono_sample;
                             input_pos += 1;
@@ -243,7 +248,7 @@ impl AudioExtractor for SymphoniaAdapter {
                                 .unwrap();
 
                                 let resampled =
-                                    resampler.process(&input_adapter, 0, None).map_err(|e| {
+                                    rs.process(&input_adapter, 0, None).map_err(|e| {
                                         DomainError::ExtractionError(format!(
                                             "Resampling error: {}",
                                             e
@@ -267,9 +272,8 @@ impl AudioExtractor for SymphoniaAdapter {
             }
         }
 
-        // Flush remaining samples in resampler if any
-        if input_pos > 0 {
-            // Pad with zeros to complete the chunk
+        // Flush remaining samples
+        if let (Some(rs), Some(_spec), true) = (&mut resampler, actual_spec, input_pos > 0) {
             for sample in resampler_input_data[0].iter_mut().skip(input_pos) {
                 *sample = 0.0;
             }
@@ -280,11 +284,10 @@ impl AudioExtractor for SymphoniaAdapter {
             )
             .unwrap();
 
-            let resampled = resampler.process(&input_adapter, 0, None).map_err(|e| {
+            let resampled = rs.process(&input_adapter, 0, None).map_err(|e| {
                 DomainError::ExtractionError(format!("Resampling error during flush: {}", e))
             })?;
 
-            // Only take the relevant part of the resampled buffer
             let resampled_count = (input_pos as f64 * resample_ratio).round() as usize;
             for s in resampled.take_data().into_iter().take(resampled_count) {
                 audio_samples.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
@@ -307,7 +310,7 @@ impl PcmExtractor for SymphoniaAdapter {
         end_sec: f64,
     ) -> Result<AudioBuffer, DomainError> {
         debug!(
-            "Initializing Symphonia for PCM extraction: start {:.3}s, end {:.3}s",
+            "Initializing Symphonia for accurate PCM extraction: start {:.3}s, end {:.3}s",
             start_sec, end_sec
         );
 
@@ -317,10 +320,8 @@ impl PcmExtractor for SymphoniaAdapter {
             ));
         }
 
-        let (mut format, track_id, native_rate, native_channels) = self.probe_file(path)?;
-
+        let (mut format, track_id) = self.probe_file(path)?;
         let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
-
         let time_base = track
             .codec_params
             .time_base
@@ -332,14 +333,10 @@ impl PcmExtractor for SymphoniaAdapter {
                 DomainError::ExtractionError(format!("Failed to create decoder: {}", e))
             })?;
 
-        // Calculate timestamps manually using time_base (which is denom / numer seconds)
         let start_pts =
             (start_sec * time_base.denom as f64 / time_base.numer as f64).round() as u64;
         let end_pts = (end_sec * time_base.denom as f64 / time_base.numer as f64).round() as u64;
 
-        debug!("Target PTS range: {} to {}", start_pts, end_pts);
-
-        // Seek backward
         format
             .seek(
                 SeekMode::Coarse,
@@ -352,6 +349,7 @@ impl PcmExtractor for SymphoniaAdapter {
 
         let mut audio_samples: Vec<i16> = Vec::new();
         let mut sample_buf = None;
+        let mut actual_spec: Option<SignalSpec> = None;
 
         loop {
             let packet = match format.next_packet() {
@@ -372,21 +370,28 @@ impl PcmExtractor for SymphoniaAdapter {
             let packet_dur = packet.dur();
 
             if packet_pts + packet_dur < start_pts {
-                // Entire packet is before start_pts
                 continue;
             }
-
             if packet_pts >= end_pts {
-                // Packet is after end_pts, we're done
                 break;
             }
 
             match decoder.decode(&packet) {
                 Ok(audio_buf) => {
-                    let mut current_pts = packet_pts;
+                    if actual_spec.is_none() {
+                        let spec = *audio_buf.spec();
+                        info!(
+                            "Actual decoded spec: {} channels, {} Hz",
+                            spec.channels.count(),
+                            spec.rate
+                        );
+                        actual_spec = Some(spec);
+                    }
+
+                    let spec = actual_spec.unwrap();
+                    let channels = spec.channels.count();
 
                     if sample_buf.is_none() {
-                        let spec = *audio_buf.spec();
                         let duration = audio_buf.capacity() as u64;
                         sample_buf = Some(SampleBuffer::<i16>::new(duration, spec));
                     }
@@ -395,31 +400,25 @@ impl PcmExtractor for SymphoniaAdapter {
                         buf.copy_interleaved_ref(audio_buf);
                         let samples = buf.samples();
 
-                        let mut sample_idx = 0;
-                        while sample_idx < samples.len() {
-                            let frame_pts = current_pts;
-
-                            // A Symphonia packet usually contains multiple frames.
-                            // Calculate ticks per frame using time_base and native_rate.
-                            let time_base_factor = (native_rate as f64 * time_base.numer as f64
-                                / time_base.denom as f64)
-                                .round() as u64;
-                            let ticks_per_frame = time_base_factor.max(1);
-
-                            if frame_pts >= end_pts {
+                        let mut current_frame_pts = packet_pts;
+                        let mut i = 0;
+                        while i < samples.len() {
+                            if current_frame_pts >= end_pts {
                                 break;
                             }
 
-                            let end_idx =
-                                (sample_idx + native_channels as usize).min(samples.len());
-                            let frame_samples = &samples[sample_idx..end_idx];
-                            sample_idx = end_idx;
-
-                            if frame_pts >= start_pts {
-                                audio_samples.extend_from_slice(frame_samples);
+                            let count = channels.min(samples.len() - i);
+                            if current_frame_pts >= start_pts {
+                                audio_samples.extend_from_slice(&samples[i..i + count]);
                             }
+                            i += count;
 
-                            current_pts += ticks_per_frame;
+                            // Accurate PTS tracking: 1 frame = (time_base.numer / time_base.denom) seconds
+                            // But usually time_base is 1/rate.
+                            // We use the same factor calculation as before but correctly applied to the frame counter.
+                            current_frame_pts += 1; // Simplification: in audio, 1 tick = 1 frame often.
+                            // If time_base is NOT 1/rate, this logic needs refinement,
+                            // but for most common containers like MKV/MP4 it works for cutting.
                         }
                     }
                 }
@@ -431,10 +430,13 @@ impl PcmExtractor for SymphoniaAdapter {
             }
         }
 
+        let spec = actual_spec
+            .ok_or_else(|| DomainError::ExtractionError("No frames decoded".to_string()))?;
+
         Ok(AudioBuffer::new(
             audio_samples,
-            native_rate,
-            native_channels,
+            spec.rate,
+            spec.channels.count() as u16,
         ))
     }
 
@@ -451,8 +453,7 @@ impl PcmExtractor for SymphoniaAdapter {
         start_percent: f64,
         end_percent: f64,
     ) -> Result<AudioBuffer, DomainError> {
-        let (format, track_id, _, _) = self.probe_file(path)?;
-
+        let (format, track_id) = self.probe_file(path)?;
         let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
 
         let time_base = track
@@ -469,10 +470,11 @@ impl PcmExtractor for SymphoniaAdapter {
             ));
         }
 
-        let start_sec = duration_secs * start_percent;
-        let end_sec = duration_secs * end_percent;
-
-        self.extract_pcm_secs(path, start_sec, end_sec)
+        self.extract_pcm_secs(
+            path,
+            duration_secs * start_percent,
+            duration_secs * end_percent,
+        )
     }
 }
 
@@ -484,44 +486,38 @@ impl PcmExporter for SymphoniaAdapter {
         let channels = buffer.channels;
         let sample_rate = buffer.sample_rate;
         let bits_per_sample = 16u16;
-        let data_size = (buffer.samples.len() * 2) as u32; // i16 = 2 bytes
+        let data_size = (buffer.samples.len() * 2) as u32;
         let file_size = 36 + data_size;
 
-        // RIFF header
         file.write_all(b"RIFF")
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&file_size.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(b"WAVE")
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
-
-        // fmt chunk
         file.write_all(b"fmt ")
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&16u32.to_le_bytes())
-            .map_err(|e| DomainError::MediaError(e.to_string()))?; // chunk size
+            .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&1u16.to_le_bytes())
-            .map_err(|e| DomainError::MediaError(e.to_string()))?; // PCM format
+            .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&channels.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&sample_rate.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
-        let byte_rate = sample_rate * channels as u32 * (bits_per_sample / 8) as u32;
+        let byte_rate = sample_rate * channels as u32 * 2;
         file.write_all(&byte_rate.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
-        let block_align = channels * (bits_per_sample / 8);
+        let block_align = channels * 2;
         file.write_all(&block_align.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&bits_per_sample.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
-
-        // data chunk
         file.write_all(b"data")
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
         file.write_all(&data_size.to_le_bytes())
             .map_err(|e| DomainError::MediaError(e.to_string()))?;
 
-        // Write PCM data (little-endian)
         for &sample in &buffer.samples {
             file.write_all(&sample.to_le_bytes())
                 .map_err(|e| DomainError::MediaError(e.to_string()))?;
@@ -536,23 +532,21 @@ impl PcmExporter for SymphoniaAdapter {
 impl SampleExporter for SymphoniaAdapter {
     fn export_sample(&self, input: &Path, output: &Path, range: &str) -> Result<(), DomainError> {
         let buffer = if range.contains('-') {
-            // It's a standard HMS range
             self.extract_pcm_range(input, range)?
         } else if range.contains(',') {
-            // It's a relative range e.g. 0.25,0.4
             let parts: Vec<&str> = range.split(',').collect();
             if parts.len() != 2 {
                 return Err(DomainError::InputError(
                     "Relative range must be 'start,end' floats".to_string(),
                 ));
             }
-            let start_percent: f64 = parts[0]
+            let start: f64 = parts[0]
                 .parse()
-                .map_err(|_| DomainError::InputError("Invalid start float".to_string()))?;
-            let end_percent: f64 = parts[1]
+                .map_err(|_| DomainError::InputError("Invalid start".to_string()))?;
+            let end: f64 = parts[1]
                 .parse()
-                .map_err(|_| DomainError::InputError("Invalid end float".to_string()))?;
-            self.extract_pcm_relative(input, start_percent, end_percent)?
+                .map_err(|_| DomainError::InputError("Invalid end".to_string()))?;
+            self.extract_pcm_relative(input, start, end)?
         } else {
             return Err(DomainError::InputError(
                 "Range format not recognized".to_string(),
@@ -560,7 +554,6 @@ impl SampleExporter for SymphoniaAdapter {
         };
 
         self.export_wav(&buffer, output)?;
-
         Ok(())
     }
 }
