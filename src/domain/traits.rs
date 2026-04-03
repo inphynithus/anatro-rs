@@ -28,12 +28,23 @@ pub trait SampleExporter {
 
 /// Port for sample-accurate PCM extraction.
 pub trait PcmExtractor {
-    /// Extracts raw PCM data from a media file for a given start time and duration.
-    fn extract_pcm_range(
+    /// Core extraction method based on start and end time in seconds.
+    fn extract_pcm_secs(
         &self,
         path: &Path,
-        start: &str,
-        duration: f64,
+        start_sec: f64,
+        end_sec: f64,
+    ) -> Result<AudioBuffer, DomainError>;
+
+    /// Extracts raw PCM data using HH:MM:SS strings for the timestamp range.
+    fn extract_pcm_range(&self, path: &Path, range: &str) -> Result<AudioBuffer, DomainError>;
+
+    /// Extracts raw PCM data using relative percentages of the track's total duration (0.0 to 1.0).
+    fn extract_pcm_relative(
+        &self,
+        path: &Path,
+        start_percent: f64,
+        end_percent: f64,
     ) -> Result<AudioBuffer, DomainError>;
 }
 

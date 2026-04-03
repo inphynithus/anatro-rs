@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+audioadapter = "3.0.0"
 chromaprint = "0.2.0"
 clap = { version = "4.6.0", features = ["derive"] }
 dialoguer = "0.12.0"
 env_logger = "0.11.10"
-ffmpeg-next = "8.1.0"
 log = "0.4.29"
 rayon = "1.11.0"
+rubato = "2.0.0"
+symphonia = { version = "0.5.5", features = ["all"] }
 thiserror = "2.0.18"

@@ -20,7 +20,7 @@ use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::pipeline::SourceMedia;
 use anatro_rs::domain::traits::SampleExporter;
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
-use anatro_rs::infrastructure::ffmpeg::FfmpegAdapter;
+use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::Result;
 use clap::Parser;
 use std::env;
@@ -34,7 +34,7 @@ pub fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scan { sample } => {
-            let ffmpeg = FfmpegAdapter::new();
+            let extractor = SymphoniaAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
 
             log::info!("Processing media file: {}", sample.display());
@@ -43,7 +43,7 @@ pub fn main() -> Result<()> {
 
             // Pipeline execution:
             // 1. Extract Audio (includes track selection and mono/downsampling)
-            let extracted = source.extract_audio(&ffmpeg)?;
+            let extracted = source.extract_audio(&extractor)?;
 
             log::info!(
                 "Audio extracted successfully ({} samples).",
@@ -63,7 +63,7 @@ pub fn main() -> Result<()> {
             range,
             output,
         } => {
-            let ffmpeg = FfmpegAdapter::new();
+            let extractor = SymphoniaAdapter::new();
 
             // Handle output path: if it's a simple name, use CWD.
             // Automatically append .wav for internal testing if no extension is provided.
@@ -83,7 +83,7 @@ pub fn main() -> Result<()> {
             log::info!("Output path: {}", final_output.display());
             log::info!("NOTE: Using sample-accurate PCM extraction with WAV export.");
 
-            ffmpeg.export_sample(&target, &final_output, &range)?;
+            extractor.export_sample(&target, &final_output, &range)?;
 
             log::info!(
                 "Sample extracted successfully to: {}",
