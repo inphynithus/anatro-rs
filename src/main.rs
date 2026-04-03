@@ -17,6 +17,7 @@
 //! A Rust CLI application for audio fingerprinting and matching.
 
 use anatro_rs::cli::{Cli, Commands};
+use anatro_rs::domain::matcher::SlidingWindowMatcher;
 use anatro_rs::domain::pipeline::SourceMedia;
 use anatro_rs::domain::traits::{AudioExtractor, PcmExporter, SampleExporter, TrackSelector};
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
@@ -24,6 +25,19 @@ use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::Result;
 use clap::Parser;
 use std::env;
+use std::path::PathBuf;
+
+/// Helper to find a reference file with one of the supported extensions.
+fn find_reference_file(base_name: &str) -> Option<PathBuf> {
+    let extensions = ["aac", "flac", "mp3", "opus", "vorbis", "ogg", "m4a", "wav"];
+    for ext in extensions {
+        let path = PathBuf::from(format!("{}.{}", base_name, ext));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
 
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
@@ -36,30 +50,64 @@ pub fn main() -> Result<()> {
         Commands::Scan { sample } => {
             let extractor = SymphoniaAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
+            let matcher = SlidingWindowMatcher::new();
 
             log::info!("Processing media file: {}", sample.display());
 
+            // 1. Process target episode
             let source = SourceMedia::new(sample);
-
-            // Pipeline execution:
-            // 1. Select Track
             let selected_track = source.select_track(&extractor)?;
-
-            // 2. Extract Audio (mono/downsampling)
             let extracted = selected_track.extract_audio(&extractor)?;
-
-            log::info!(
-                "Audio extracted successfully ({} samples).",
-                extracted.buffer().samples().len()
-            );
-
-            // 3. Generate Fingerprint
             let fingerprinted = extracted.generate_fingerprint(&chromaprint)?;
 
             log::info!(
-                "Fingerprint generated successfully ({} hashes).",
+                "Episode fingerprint generated ({} hashes).",
                 fingerprinted.fingerprint().len()
             );
+
+            // 2. Process Reference Samples
+            let ref_bases = ["intro_sample", "outro_sample"];
+            for base in ref_bases {
+                if let Some(ref_path) = find_reference_file(base) {
+                    log::info!("Found reference sample: {}", ref_path.display());
+                    let ref_source = SourceMedia::new(ref_path);
+                    let ref_selected = ref_source.select_track(&extractor)?;
+                    let ref_extracted = ref_selected.extract_audio(&extractor)?;
+                    let ref_fingerprinted = ref_extracted.generate_fingerprint(&chromaprint)?;
+
+                    log::info!(
+                        "Reference '{}' fingerprint generated ({} hashes).",
+                        base,
+                        ref_fingerprinted.fingerprint().len()
+                    );
+
+                    // 3. Perform Matching
+                    // Use a conservative threshold: 20% bit error rate (32 bits * 0.20 = 6.4 bits per hash)
+                    let threshold = (ref_fingerprinted.fingerprint().len() as u32 * 32) / 5;
+
+                    let result = fingerprinted.find_match(
+                        &matcher,
+                        ref_fingerprinted.fingerprint(),
+                        threshold,
+                    )?;
+
+                    match result.match_index {
+                        Some(idx) => {
+                            // Each Chromaprint hash usually represents ~0.1s of audio (depending on parameters)
+                            // Our default is 11025Hz and default chromaprint window settings.
+                            log::info!("MATCH FOUND for '{}' at index {}.", base, idx);
+                        }
+                        None => {
+                            log::warn!("No suitable match found for '{}'.", base);
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "Reference sample '{}.*' not found in current directory. Skipping.",
+                        base
+                    );
+                }
+            }
         }
         Commands::SampleExtract {
             target,

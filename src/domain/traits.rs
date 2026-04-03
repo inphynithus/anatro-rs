@@ -56,7 +56,14 @@ pub trait SampleExporter {
     ) -> Result<(), DomainError>;
 }
 
-/// Port for sample-accurate PCM extraction.
+/// Port for finding sub-fingerprint matches within a target fingerprint.
+pub trait FingerprintMatcher {
+    /// Finds the best match of the `reference` sub-fingerprint within the `target` fingerprint.
+    ///
+    /// Returns the index of the best match if the error is within the `threshold`,
+    /// or `None` if no suitable match is found.
+    fn find_match(&self, reference: &[u32], target: &[u32], threshold: u32) -> Option<usize>;
+}
 pub trait PcmExtractor {
     /// Core extraction method based on start and end time in seconds.
     fn extract_pcm_secs(

@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 pub mod audio;
+pub mod matcher;
 pub mod pipeline;
 pub mod traits;
 

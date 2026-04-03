@@ -32,6 +32,13 @@ pub struct FingerprintedMedia {
     pub(crate) fingerprint: Vec<u32>,
 }
 
+/// State after a match operation has been attempted.
+#[derive(Debug)]
+pub struct MatchResult {
+    pub path: PathBuf,
+    pub match_index: Option<usize>,
+}
+
 impl SourceMedia {
     /// Creates a new SourceMedia state.
     pub fn new(path: PathBuf) -> Self {
@@ -93,5 +100,19 @@ impl FingerprintedMedia {
     /// Returns a reference to the source path.
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Transitions to MatchResult state by attempting to find a sub-fingerprint match.
+    pub fn find_match<M: crate::domain::traits::FingerprintMatcher>(
+        &self,
+        matcher: &M,
+        reference: &[u32],
+        threshold: u32,
+    ) -> Result<MatchResult, DomainError> {
+        let match_index = matcher.find_match(reference, &self.fingerprint, threshold);
+        Ok(MatchResult {
+            path: self.path.clone(),
+            match_index,
+        })
     }
 }
