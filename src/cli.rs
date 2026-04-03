@@ -25,6 +25,9 @@ pub enum Commands {
         /// The path to the reference sample to search for (e.g., intro_sample.wav).
         #[arg(short = 's', long = "sample", value_name = "FILE")]
         sample: PathBuf,
+        /// Positive or negative offset in seconds to apply to the match result.
+        #[arg(short = 'f', long = "offset", default_value_t = 0.0)]
+        offset: f64,
     },
     /// Extracts an audio sample from a media file for a given timestamp range.
     SampleExtract {

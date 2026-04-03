@@ -40,13 +40,20 @@ pub fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Scan { target, sample } => {
+        Commands::Scan {
+            target,
+            sample,
+            offset,
+        } => {
             let extractor = SymphoniaAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
             let matcher = SlidingWindowMatcher::new();
 
             log::info!("Scanning target: {}", target.display());
             log::info!("Using reference sample: {}", sample.display());
+            if offset != 0.0 {
+                log::info!("Applying user offset: {:.2}s", offset);
+            }
 
             // 1. Determine Search Space based on sample name
             let sample_name = sample.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -106,10 +113,10 @@ pub fn main() -> Result<()> {
 
             match match_index {
                 Some(idx) => {
-                    // Heuristic: each hash is approx 0.124s (11025 / 1365 or similar in chromaprint)
-                    let tick_duration = 0.124;
+                    // Heuristic: each hash is approx 0.128s (standard 128ms tick)
+                    let tick_duration = 0.128;
                     let start_in_space = idx as f64 * tick_duration;
-                    let start_total = segmented_fingerprints.offset_sec() + start_in_space;
+                    let start_total = segmented_fingerprints.offset_sec() + start_in_space + offset;
                     let duration_sample = ref_fingerprinted.len() as f64 * tick_duration;
 
                     log::info!(
