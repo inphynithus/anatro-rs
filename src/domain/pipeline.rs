@@ -11,6 +11,13 @@ pub struct SourceMedia {
     pub(crate) path: PathBuf,
 }
 
+/// State after track selection.
+#[derive(Debug)]
+pub struct SelectedTrack {
+    pub(crate) path: PathBuf,
+    pub(crate) track_id: u32,
+}
+
 /// State after audio extraction: contains raw samples.
 #[derive(Debug)]
 pub struct ExtractedAudio {
@@ -31,12 +38,26 @@ impl SourceMedia {
         Self { path }
     }
 
+    /// Transitions to SelectedTrack state by probing the file and selecting a track.
+    pub fn select_track<S: crate::domain::traits::TrackSelector>(
+        self,
+        selector: &S,
+    ) -> Result<SelectedTrack, DomainError> {
+        let track_id = selector.select_track(&self.path)?;
+        Ok(SelectedTrack {
+            path: self.path,
+            track_id,
+        })
+    }
+}
+
+impl SelectedTrack {
     /// Transitions to ExtractedAudio state by extracting audio using the provided extractor.
     pub fn extract_audio<E: AudioExtractor>(
         self,
         extractor: &E,
     ) -> Result<ExtractedAudio, DomainError> {
-        let buffer = extractor.extract_audio(&self.path)?;
+        let buffer = extractor.extract_audio(&self.path, self.track_id)?;
         Ok(ExtractedAudio {
             path: self.path,
             buffer,

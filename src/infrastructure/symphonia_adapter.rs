@@ -2,7 +2,9 @@
 
 use crate::domain::DomainError;
 use crate::domain::audio::AudioBuffer;
-use crate::domain::traits::{AudioExtractor, PcmExporter, PcmExtractor, SampleExporter};
+use crate::domain::traits::{
+    AudioExtractor, PcmExporter, PcmExtractor, SampleExporter, TrackSelector,
+};
 use dialoguer::Select;
 use log::{debug, info, warn};
 use rubato::{
@@ -36,8 +38,66 @@ impl SymphoniaAdapter {
         Self
     }
 
-    /// Selects an audio stream from the media file.
-    fn select_audio_stream(&self, format: &dyn FormatReader) -> Result<u32, DomainError> {
+    /// Parses a timestamp range in the format 'HH:MM:SS-HH:MM:SS' into (start, end) strings.
+    fn parse_range<'a>(&self, range: &'a str) -> Result<(&'a str, &'a str), DomainError> {
+        let parts: Vec<&str> = range.split('-').collect();
+        if parts.len() != 2 {
+            return Err(DomainError::InputError(
+                "Range must be in 'HH:MM:SS-HH:MM:SS' format".to_string(),
+            ));
+        }
+        Ok((parts[0], parts[1]))
+    }
+
+    /// Parses HH:MM:SS to seconds.
+    pub fn hms_to_seconds(&self, hms: &str) -> Result<f64, DomainError> {
+        let parts: Vec<&str> = hms.split(':').collect();
+        if parts.len() != 3 {
+            return Err(DomainError::InputError(format!(
+                "Invalid timestamp format: {}. Expected HH:MM:SS",
+                hms
+            )));
+        }
+        let h: f64 = parts[0].parse().map_err(|_| {
+            DomainError::InputError(format!("Invalid hours in timestamp: {}", parts[0]))
+        })?;
+        let m: f64 = parts[1].parse().map_err(|_| {
+            DomainError::InputError(format!("Invalid minutes in timestamp: {}", parts[1]))
+        })?;
+        let s: f64 = parts[2].parse().map_err(|_| {
+            DomainError::InputError(format!("Invalid seconds in timestamp: {}", parts[2]))
+        })?;
+        Ok(h * 3600.0 + m * 60.0 + s)
+    }
+
+    /// Helper to probe a file and return format.
+    fn probe_file(&self, path: &Path) -> Result<Box<dyn FormatReader>, DomainError> {
+        let file = File::open(path)
+            .map_err(|e| DomainError::ExtractionError(format!("Failed to open file: {}", e)))?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+
+        let probed = symphonia::default::get_probe()
+            .format(
+                &hint,
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .map_err(|e| DomainError::ExtractionError(format!("Failed to probe format: {}", e)))?;
+
+        Ok(probed.format)
+    }
+}
+
+impl TrackSelector for SymphoniaAdapter {
+    fn select_track(&self, path: &Path) -> Result<u32, DomainError> {
+        let format = self.probe_file(path)?;
+
         let tracks: Vec<_> = format
             .tracks()
             .iter()
@@ -76,72 +136,18 @@ impl SymphoniaAdapter {
 
         Ok(tracks[selection].id)
     }
-
-    /// Parses a timestamp range in the format 'HH:MM:SS-HH:MM:SS' into (start, end) strings.
-    fn parse_range<'a>(&self, range: &'a str) -> Result<(&'a str, &'a str), DomainError> {
-        let parts: Vec<&str> = range.split('-').collect();
-        if parts.len() != 2 {
-            return Err(DomainError::InputError(
-                "Range must be in 'HH:MM:SS-HH:MM:SS' format".to_string(),
-            ));
-        }
-        Ok((parts[0], parts[1]))
-    }
-
-    /// Parses HH:MM:SS to seconds.
-    pub fn hms_to_seconds(&self, hms: &str) -> Result<f64, DomainError> {
-        let parts: Vec<&str> = hms.split(':').collect();
-        if parts.len() != 3 {
-            return Err(DomainError::InputError(format!(
-                "Invalid timestamp format: {}. Expected HH:MM:SS",
-                hms
-            )));
-        }
-        let h: f64 = parts[0].parse().map_err(|_| {
-            DomainError::InputError(format!("Invalid hours in timestamp: {}", parts[0]))
-        })?;
-        let m: f64 = parts[1].parse().map_err(|_| {
-            DomainError::InputError(format!("Invalid minutes in timestamp: {}", parts[1]))
-        })?;
-        let s: f64 = parts[2].parse().map_err(|_| {
-            DomainError::InputError(format!("Invalid seconds in timestamp: {}", parts[2]))
-        })?;
-        Ok(h * 3600.0 + m * 60.0 + s)
-    }
-
-    /// Helper to probe a file and return format, track ID.
-    fn probe_file(&self, path: &Path) -> Result<(Box<dyn FormatReader>, u32), DomainError> {
-        let file = File::open(path)
-            .map_err(|e| DomainError::ExtractionError(format!("Failed to open file: {}", e)))?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-
-        let probed = symphonia::default::get_probe()
-            .format(
-                &hint,
-                mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
-            )
-            .map_err(|e| DomainError::ExtractionError(format!("Failed to probe format: {}", e)))?;
-
-        let format = probed.format;
-        let track_id = self.select_audio_stream(format.as_ref())?;
-
-        Ok((format, track_id))
-    }
 }
 
 impl AudioExtractor for SymphoniaAdapter {
-    fn extract_audio(&self, path: &Path) -> Result<AudioBuffer, DomainError> {
+    fn extract_audio(&self, path: &Path, track_id: u32) -> Result<AudioBuffer, DomainError> {
         debug!("Initializing Symphonia for full track extraction with resampling");
-        let (mut format, track_id) = self.probe_file(path)?;
+        let mut format = self.probe_file(path)?;
 
-        let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
 
         let mut decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &DecoderOptions::default())
@@ -245,7 +251,9 @@ impl AudioExtractor for SymphoniaAdapter {
                                     TARGET_CHANNELS as usize,
                                     chunk_size,
                                 )
-                                .unwrap();
+                                .map_err(|e| {
+                                    DomainError::ExtractionError(format!("Buffer error: {}", e))
+                                })?;
 
                                 let resampled =
                                     rs.process(&input_adapter, 0, None).map_err(|e| {
@@ -282,7 +290,7 @@ impl AudioExtractor for SymphoniaAdapter {
                 TARGET_CHANNELS as usize,
                 chunk_size,
             )
-            .unwrap();
+            .map_err(|e| DomainError::ExtractionError(format!("Buffer error: {}", e)))?;
 
             let resampled = rs.process(&input_adapter, 0, None).map_err(|e| {
                 DomainError::ExtractionError(format!("Resampling error during flush: {}", e))
@@ -304,6 +312,7 @@ impl AudioExtractor for SymphoniaAdapter {
     fn extract_audio_range(
         &self,
         path: &Path,
+        track_id: u32,
         start_sec: f64,
         end_sec: f64,
     ) -> Result<AudioBuffer, DomainError> {
@@ -318,9 +327,13 @@ impl AudioExtractor for SymphoniaAdapter {
             ));
         }
 
-        let (mut format, track_id) = self.probe_file(path)?;
+        let mut format = self.probe_file(path)?;
 
-        let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
 
         let time_base = track
             .codec_params
@@ -459,7 +472,9 @@ impl AudioExtractor for SymphoniaAdapter {
                                         TARGET_CHANNELS as usize,
                                         chunk_size,
                                     )
-                                    .unwrap();
+                                    .map_err(|e| {
+                                        DomainError::ExtractionError(format!("Buffer error: {}", e))
+                                    })?;
 
                                     let resampled =
                                         rs.process(&input_adapter, 0, None).map_err(|e| {
@@ -499,7 +514,7 @@ impl AudioExtractor for SymphoniaAdapter {
                 TARGET_CHANNELS as usize,
                 chunk_size,
             )
-            .unwrap();
+            .map_err(|e| DomainError::ExtractionError(format!("Buffer error: {}", e)))?;
 
             let resampled = rs.process(&input_adapter, 0, None).map_err(|e| {
                 DomainError::ExtractionError(format!("Resampling error during flush: {}", e))
@@ -521,12 +536,17 @@ impl AudioExtractor for SymphoniaAdapter {
     fn extract_audio_relative(
         &self,
         path: &Path,
+        track_id: u32,
         start_percent: f64,
         end_percent: f64,
     ) -> Result<AudioBuffer, DomainError> {
-        let (format, track_id) = self.probe_file(path)?;
+        let format = self.probe_file(path)?;
 
-        let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
 
         let time_base = track
             .codec_params
@@ -544,6 +564,7 @@ impl AudioExtractor for SymphoniaAdapter {
 
         self.extract_audio_range(
             path,
+            track_id,
             duration_secs * start_percent,
             duration_secs * end_percent,
         )
@@ -554,6 +575,7 @@ impl PcmExtractor for SymphoniaAdapter {
     fn extract_pcm_secs(
         &self,
         path: &Path,
+        track_id: u32,
         start_sec: f64,
         end_sec: f64,
     ) -> Result<AudioBuffer, DomainError> {
@@ -568,8 +590,12 @@ impl PcmExtractor for SymphoniaAdapter {
             ));
         }
 
-        let (mut format, track_id) = self.probe_file(path)?;
-        let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
+        let mut format = self.probe_file(path)?;
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
         let time_base = track
             .codec_params
             .time_base
@@ -636,7 +662,11 @@ impl PcmExtractor for SymphoniaAdapter {
                         actual_spec = Some(spec);
                     }
 
-                    let spec = actual_spec.unwrap();
+                    let spec = actual_spec.ok_or_else(|| {
+                        DomainError::ExtractionError(
+                            "No frames decoded to determine spec".to_string(),
+                        )
+                    })?;
                     let channels = spec.channels.count();
 
                     if sample_buf.is_none() {
@@ -661,12 +691,7 @@ impl PcmExtractor for SymphoniaAdapter {
                             }
                             i += count;
 
-                            // Accurate PTS tracking: 1 frame = (time_base.numer / time_base.denom) seconds
-                            // But usually time_base is 1/rate.
-                            // We use the same factor calculation as before but correctly applied to the frame counter.
-                            current_frame_pts += 1; // Simplification: in audio, 1 tick = 1 frame often.
-                            // If time_base is NOT 1/rate, this logic needs refinement,
-                            // but for most common containers like MKV/MP4 it works for cutting.
+                            current_frame_pts += 1;
                         }
                     }
                 }
@@ -678,8 +703,9 @@ impl PcmExtractor for SymphoniaAdapter {
             }
         }
 
-        let spec = actual_spec
-            .ok_or_else(|| DomainError::ExtractionError("No frames decoded".to_string()))?;
+        let spec = actual_spec.ok_or_else(|| {
+            DomainError::ExtractionError("No frames decoded to determine spec".to_string())
+        })?;
 
         Ok(AudioBuffer::new(
             audio_samples,
@@ -688,21 +714,31 @@ impl PcmExtractor for SymphoniaAdapter {
         ))
     }
 
-    fn extract_pcm_range(&self, path: &Path, range: &str) -> Result<AudioBuffer, DomainError> {
+    fn extract_pcm_range(
+        &self,
+        path: &Path,
+        track_id: u32,
+        range: &str,
+    ) -> Result<AudioBuffer, DomainError> {
         let (start_hms, end_hms) = self.parse_range(range)?;
         let start_sec = self.hms_to_seconds(start_hms)?;
         let end_sec = self.hms_to_seconds(end_hms)?;
-        self.extract_pcm_secs(path, start_sec, end_sec)
+        self.extract_pcm_secs(path, track_id, start_sec, end_sec)
     }
 
     fn extract_pcm_relative(
         &self,
         path: &Path,
+        track_id: u32,
         start_percent: f64,
         end_percent: f64,
     ) -> Result<AudioBuffer, DomainError> {
-        let (format, track_id) = self.probe_file(path)?;
-        let track = format.tracks().iter().find(|t| t.id == track_id).unwrap();
+        let format = self.probe_file(path)?;
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
 
         let time_base = track
             .codec_params
@@ -720,6 +756,7 @@ impl PcmExtractor for SymphoniaAdapter {
 
         self.extract_pcm_secs(
             path,
+            track_id,
             duration_secs * start_percent,
             duration_secs * end_percent,
         )
@@ -778,9 +815,15 @@ impl PcmExporter for SymphoniaAdapter {
 }
 
 impl SampleExporter for SymphoniaAdapter {
-    fn export_sample(&self, input: &Path, output: &Path, range: &str) -> Result<(), DomainError> {
+    fn export_sample(
+        &self,
+        input: &Path,
+        track_id: u32,
+        output: &Path,
+        range: &str,
+    ) -> Result<(), DomainError> {
         let buffer = if range.contains('-') {
-            self.extract_pcm_range(input, range)?
+            self.extract_pcm_range(input, track_id, range)?
         } else if range.contains(',') {
             let parts: Vec<&str> = range.split(',').collect();
             if parts.len() != 2 {
@@ -790,11 +833,11 @@ impl SampleExporter for SymphoniaAdapter {
             }
             let start: f64 = parts[0]
                 .parse()
-                .map_err(|_| DomainError::InputError("Invalid start".to_string()))?;
+                .map_err(|_| DomainError::InputError("Invalid start float".to_string()))?;
             let end: f64 = parts[1]
                 .parse()
-                .map_err(|_| DomainError::InputError("Invalid end".to_string()))?;
-            self.extract_pcm_relative(input, start, end)?
+                .map_err(|_| DomainError::InputError("Invalid end float".to_string()))?;
+            self.extract_pcm_relative(input, track_id, start, end)?
         } else {
             return Err(DomainError::InputError(
                 "Range format not recognized".to_string(),

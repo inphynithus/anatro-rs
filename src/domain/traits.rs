@@ -4,17 +4,24 @@ use crate::domain::DomainError;
 use crate::domain::audio::AudioBuffer;
 use std::path::Path;
 
+/// Port for track selection.
+pub trait TrackSelector {
+    /// Selects an audio track from the media file.
+    fn select_track(&self, path: &Path) -> Result<u32, DomainError>;
+}
+
 /// Port for extracting audio from media files.
 pub trait AudioExtractor {
     /// Extracts and resamples audio from the given file.
     ///
     /// Implementations should handle track selection if multiple tracks are present.
-    fn extract_audio(&self, path: &Path) -> Result<AudioBuffer, DomainError>;
+    fn extract_audio(&self, path: &Path, track_id: u32) -> Result<AudioBuffer, DomainError>;
 
     /// Extracts and resamples a specific range of audio from the given file.
     fn extract_audio_range(
         &self,
         path: &Path,
+        track_id: u32,
         start_sec: f64,
         end_sec: f64,
     ) -> Result<AudioBuffer, DomainError>;
@@ -23,6 +30,7 @@ pub trait AudioExtractor {
     fn extract_audio_relative(
         &self,
         path: &Path,
+        track_id: u32,
         start_percent: f64,
         end_percent: f64,
     ) -> Result<AudioBuffer, DomainError>;
@@ -39,7 +47,13 @@ pub trait SampleExporter {
     /// Extracts a portion of an audio track and saves it to a file.
     ///
     /// `range` is expected to be in the format 'HH:MM:SS-HH:MM:SS'.
-    fn export_sample(&self, input: &Path, output: &Path, range: &str) -> Result<(), DomainError>;
+    fn export_sample(
+        &self,
+        input: &Path,
+        track_id: u32,
+        output: &Path,
+        range: &str,
+    ) -> Result<(), DomainError>;
 }
 
 /// Port for sample-accurate PCM extraction.
@@ -48,17 +62,24 @@ pub trait PcmExtractor {
     fn extract_pcm_secs(
         &self,
         path: &Path,
+        track_id: u32,
         start_sec: f64,
         end_sec: f64,
     ) -> Result<AudioBuffer, DomainError>;
 
     /// Extracts raw PCM data using HH:MM:SS strings for the timestamp range.
-    fn extract_pcm_range(&self, path: &Path, range: &str) -> Result<AudioBuffer, DomainError>;
+    fn extract_pcm_range(
+        &self,
+        path: &Path,
+        track_id: u32,
+        range: &str,
+    ) -> Result<AudioBuffer, DomainError>;
 
     /// Extracts raw PCM data using relative percentages of the track's total duration (0.0 to 1.0).
     fn extract_pcm_relative(
         &self,
         path: &Path,
+        track_id: u32,
         start_percent: f64,
         end_percent: f64,
     ) -> Result<AudioBuffer, DomainError>;

@@ -18,7 +18,7 @@
 
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::pipeline::SourceMedia;
-use anatro_rs::domain::traits::{AudioExtractor, PcmExporter, SampleExporter};
+use anatro_rs::domain::traits::{AudioExtractor, PcmExporter, SampleExporter, TrackSelector};
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::Result;
@@ -42,15 +42,18 @@ pub fn main() -> Result<()> {
             let source = SourceMedia::new(sample);
 
             // Pipeline execution:
-            // 1. Extract Audio (includes track selection and mono/downsampling)
-            let extracted = source.extract_audio(&extractor)?;
+            // 1. Select Track
+            let selected_track = source.select_track(&extractor)?;
+
+            // 2. Extract Audio (mono/downsampling)
+            let extracted = selected_track.extract_audio(&extractor)?;
 
             log::info!(
                 "Audio extracted successfully ({} samples).",
                 extracted.buffer().samples().len()
             );
 
-            // 2. Generate Fingerprint
+            // 3. Generate Fingerprint
             let fingerprinted = extracted.generate_fingerprint(&chromaprint)?;
 
             log::info!(
@@ -83,7 +86,8 @@ pub fn main() -> Result<()> {
             log::info!("Output path: {}", final_output.display());
             log::info!("NOTE: Using sample-accurate PCM extraction with WAV export.");
 
-            extractor.export_sample(&target, &final_output, &range)?;
+            let track_id = extractor.select_track(&target)?;
+            extractor.export_sample(&target, track_id, &final_output, &range)?;
 
             log::info!(
                 "Sample extracted successfully to: {}",
@@ -114,6 +118,8 @@ pub fn main() -> Result<()> {
             log::info!("Output path: {}", final_output.display());
             log::info!("NOTE: Extracting in MONO and resampled to 11025Hz for quality testing.");
 
+            let track_id = extractor.select_track(&target)?;
+
             let buffer = if range.contains('-') {
                 let parts: Vec<&str> = range.split('-').collect();
                 if parts.len() != 2 {
@@ -123,7 +129,7 @@ pub fn main() -> Result<()> {
                 }
                 let start_sec = extractor.hms_to_seconds(parts[0])?;
                 let end_sec = extractor.hms_to_seconds(parts[1])?;
-                extractor.extract_audio_range(&target, start_sec, end_sec)?
+                extractor.extract_audio_range(&target, track_id, start_sec, end_sec)?
             } else if range.contains(',') {
                 let parts: Vec<&str> = range.split(',').collect();
                 if parts.len() != 2 {
@@ -131,7 +137,7 @@ pub fn main() -> Result<()> {
                 }
                 let start_percent: f64 = parts[0].parse()?;
                 let end_percent: f64 = parts[1].parse()?;
-                extractor.extract_audio_relative(&target, start_percent, end_percent)?
+                extractor.extract_audio_relative(&target, track_id, start_percent, end_percent)?
             } else {
                 return Err(anyhow::anyhow!("Range format not recognized"));
             };
