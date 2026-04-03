@@ -18,7 +18,7 @@
 
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::matcher::SlidingWindowMatcher;
-use anatro_rs::domain::pipeline::SourceMedia;
+use anatro_rs::domain::pipeline::{SearchSpace, SourceMedia};
 use anatro_rs::domain::traits::{
     AudioExtractor, FingerprintMatcher, PcmExporter, SampleExporter, TrackSelector,
 };
@@ -44,51 +44,51 @@ pub fn main() -> Result<()> {
             log::info!("Scanning target: {}", target.display());
             log::info!("Using reference sample: {}", sample.display());
 
-            // 1. Process target episode search spaces (Intro: 0.0-0.25, Outro: 0.7-1.0)
+            // 1. Determine Search Space based on sample name
+            let sample_name = sample.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let space = if sample_name.to_lowercase().contains("intro") {
+                SearchSpace::Intro
+            } else if sample_name.to_lowercase().contains("outro") {
+                SearchSpace::Outro
+            } else {
+                log::warn!("Sample name does not contain 'intro' or 'outro'. Defaulting to Intro.");
+                SearchSpace::Intro
+            };
+
+            // 2. Process target episode search space (targeted)
             let source = SourceMedia::new(target);
             let selected_track = source.select_track(&extractor)?;
-            let segmented_audio = selected_track.extract_segmented_audio(&extractor)?;
+            let segmented_audio = selected_track.extract_segmented_audio(&extractor, space)?;
             let segmented_fingerprints =
                 segmented_audio.generate_segmented_fingerprints(&chromaprint)?;
 
             log::info!(
-                "Episode search space fingerprints generated (Intro: {}, Outro: {} hashes).",
-                segmented_fingerprints.intro_fingerprint().len(),
-                segmented_fingerprints.outro_fingerprint().len()
+                "Episode search space fingerprint generated for {:?} ({} hashes).",
+                space,
+                segmented_fingerprints.fingerprint().len()
             );
 
-            // 2. Process Reference Sample
+            // 3. Process Reference Sample
             let ref_source = SourceMedia::new(sample.clone());
             let ref_selected = ref_source.select_track(&extractor)?;
             let ref_extracted = ref_selected.extract_audio(&extractor)?;
             let ref_fingerprinted = ref_extracted.generate_fingerprint(&chromaprint)?;
 
-            let sample_name = sample.file_name().and_then(|n| n.to_str()).unwrap_or("");
             log::info!(
                 "Reference '{}' fingerprint generated ({} hashes).",
                 sample_name,
                 ref_fingerprinted.fingerprint().len()
             );
 
-            // 3. Determine Search Space based on sample name
-            let search_space = if sample_name.to_lowercase().contains("intro") {
-                segmented_fingerprints.intro_fingerprint()
-            } else if sample_name.to_lowercase().contains("outro") {
-                segmented_fingerprints.outro_fingerprint()
-            } else {
-                log::warn!(
-                    "Sample name does not contain 'intro' or 'outro'. Comparing against both spaces."
-                );
-                // For simplicity, just pick Intro for now if unknown
-                segmented_fingerprints.intro_fingerprint()
-            };
-
             // 4. Perform Matching
             // Use a conservative threshold: 20% bit error rate
             let threshold = (ref_fingerprinted.fingerprint().len() as u32 * 32) / 5;
 
-            let match_index =
-                matcher.find_match(ref_fingerprinted.fingerprint(), search_space, threshold);
+            let match_index = matcher.find_match(
+                ref_fingerprinted.fingerprint(),
+                segmented_fingerprints.fingerprint(),
+                threshold,
+            );
 
             match match_index {
                 Some(idx) => {
