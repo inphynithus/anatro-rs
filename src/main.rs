@@ -27,19 +27,6 @@ use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::Result;
 use clap::Parser;
 use std::env;
-use std::path::PathBuf;
-
-/// Helper to find a reference file with one of the supported extensions.
-fn find_reference_file(base_name: &str) -> Option<PathBuf> {
-    let extensions = ["aac", "flac", "mp3", "opus", "vorbis", "ogg", "m4a", "wav"];
-    for ext in extensions {
-        let path = PathBuf::from(format!("{}.{}", base_name, ext));
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    None
-}
 
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
@@ -49,15 +36,16 @@ pub fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Scan { sample } => {
+        Commands::Scan { target, sample } => {
             let extractor = SymphoniaAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
             let matcher = SlidingWindowMatcher::new();
 
-            log::info!("Processing media file: {}", sample.display());
+            log::info!("Scanning target: {}", target.display());
+            log::info!("Using reference sample: {}", sample.display());
 
             // 1. Process target episode search spaces (Intro: 0.0-0.25, Outro: 0.7-1.0)
-            let source = SourceMedia::new(sample);
+            let source = SourceMedia::new(target);
             let selected_track = source.select_track(&extractor)?;
             let segmented_audio = selected_track.extract_segmented_audio(&extractor)?;
             let segmented_fingerprints =
@@ -69,56 +57,45 @@ pub fn main() -> Result<()> {
                 segmented_fingerprints.outro_fingerprint().len()
             );
 
-            // 2. Process Reference Samples
-            let ref_configs = [
-                ("intro_sample", segmented_fingerprints.intro_fingerprint()),
-                ("outro_sample", segmented_fingerprints.outro_fingerprint()),
-            ];
+            // 2. Process Reference Sample
+            let ref_source = SourceMedia::new(sample.clone());
+            let ref_selected = ref_source.select_track(&extractor)?;
+            let ref_extracted = ref_selected.extract_audio(&extractor)?;
+            let ref_fingerprinted = ref_extracted.generate_fingerprint(&chromaprint)?;
 
-            for (base, ep_fingerprint) in ref_configs {
-                if let Some(ref_path) = find_reference_file(base) {
-                    log::info!("Found reference sample: {}", ref_path.display());
-                    let ref_source = SourceMedia::new(ref_path);
-                    let ref_selected = ref_source.select_track(&extractor)?;
-                    let ref_extracted = ref_selected.extract_audio(&extractor)?;
-                    let ref_fingerprinted = ref_extracted.generate_fingerprint(&chromaprint)?;
+            let sample_name = sample.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            log::info!(
+                "Reference '{}' fingerprint generated ({} hashes).",
+                sample_name,
+                ref_fingerprinted.fingerprint().len()
+            );
 
-                    log::info!(
-                        "Reference '{}' fingerprint generated ({} hashes).",
-                        base,
-                        ref_fingerprinted.fingerprint().len()
-                    );
+            // 3. Determine Search Space based on sample name
+            let search_space = if sample_name.to_lowercase().contains("intro") {
+                segmented_fingerprints.intro_fingerprint()
+            } else if sample_name.to_lowercase().contains("outro") {
+                segmented_fingerprints.outro_fingerprint()
+            } else {
+                log::warn!(
+                    "Sample name does not contain 'intro' or 'outro'. Comparing against both spaces."
+                );
+                // For simplicity, just pick Intro for now if unknown
+                segmented_fingerprints.intro_fingerprint()
+            };
 
-                    // 3. Perform Matching
-                    // Use a conservative threshold: 20% bit error rate
-                    let threshold = (ref_fingerprinted.fingerprint().len() as u32 * 32) / 5;
+            // 4. Perform Matching
+            // Use a conservative threshold: 20% bit error rate
+            let threshold = (ref_fingerprinted.fingerprint().len() as u32 * 32) / 5;
 
-                    let match_index = matcher.find_match(
-                        ref_fingerprinted.fingerprint(),
-                        ep_fingerprint,
-                        threshold,
-                    );
+            let match_index =
+                matcher.find_match(ref_fingerprinted.fingerprint(), search_space, threshold);
 
-                    match match_index {
-                        Some(idx) => {
-                            log::info!(
-                                "MATCH FOUND for '{}' within search space at index {}.",
-                                base,
-                                idx
-                            );
-                        }
-                        None => {
-                            log::warn!(
-                                "No suitable match found for '{}' within search space.",
-                                base
-                            );
-                        }
-                    }
-                } else {
-                    log::warn!(
-                        "Reference sample '{}.*' not found in current directory. Skipping.",
-                        base
-                    );
+            match match_index {
+                Some(idx) => {
+                    log::info!("MATCH FOUND for '{}' at index {}.", sample_name, idx);
+                }
+                None => {
+                    log::warn!("No suitable match found for '{}'.", sample_name);
                 }
             }
         }

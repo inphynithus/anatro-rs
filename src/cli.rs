@@ -15,14 +15,14 @@ pub struct Cli {
 /// The available subcommands for the application.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Scans a target media file to identify intro and outro sections.
+    /// Scans a target media file to find a match for a given reference sample.
     ///
-    /// NOTE: This command assumes that `intro_sample.(ext)` and `outro_sample.(ext)`
-    /// exist in the current directory. The `(ext)` should be one of the supported
-    /// audio codecs (AAC, FLAC, MP3, OPUS, VORBIS). These samples are used as the
-    /// reference fingerprints for the scan.
+    /// The target file is processed using search space heuristics (Intro: 0.0-0.25, Outro: 0.7-1.0).
     Scan {
         /// The path to the media file to process (e.g., an MKV or MP4 episode).
+        #[arg(short = 't', long = "target", value_name = "FILE")]
+        target: PathBuf,
+        /// The path to the reference sample to search for (e.g., intro_sample.wav).
         #[arg(short = 's', long = "sample", value_name = "FILE")]
         sample: PathBuf,
     },
