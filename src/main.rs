@@ -19,7 +19,9 @@
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::matcher::SlidingWindowMatcher;
 use anatro_rs::domain::pipeline::SourceMedia;
-use anatro_rs::domain::traits::{AudioExtractor, PcmExporter, SampleExporter, TrackSelector};
+use anatro_rs::domain::traits::{
+    AudioExtractor, FingerprintMatcher, PcmExporter, SampleExporter, TrackSelector,
+};
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::Result;
@@ -54,20 +56,26 @@ pub fn main() -> Result<()> {
 
             log::info!("Processing media file: {}", sample.display());
 
-            // 1. Process target episode
+            // 1. Process target episode search spaces (Intro: 0.0-0.25, Outro: 0.7-1.0)
             let source = SourceMedia::new(sample);
             let selected_track = source.select_track(&extractor)?;
-            let extracted = selected_track.extract_audio(&extractor)?;
-            let fingerprinted = extracted.generate_fingerprint(&chromaprint)?;
+            let segmented_audio = selected_track.extract_segmented_audio(&extractor)?;
+            let segmented_fingerprints =
+                segmented_audio.generate_segmented_fingerprints(&chromaprint)?;
 
             log::info!(
-                "Episode fingerprint generated ({} hashes).",
-                fingerprinted.fingerprint().len()
+                "Episode search space fingerprints generated (Intro: {}, Outro: {} hashes).",
+                segmented_fingerprints.intro_fingerprint().len(),
+                segmented_fingerprints.outro_fingerprint().len()
             );
 
             // 2. Process Reference Samples
-            let ref_bases = ["intro_sample", "outro_sample"];
-            for base in ref_bases {
+            let ref_configs = [
+                ("intro_sample", segmented_fingerprints.intro_fingerprint()),
+                ("outro_sample", segmented_fingerprints.outro_fingerprint()),
+            ];
+
+            for (base, ep_fingerprint) in ref_configs {
                 if let Some(ref_path) = find_reference_file(base) {
                     log::info!("Found reference sample: {}", ref_path.display());
                     let ref_source = SourceMedia::new(ref_path);
@@ -82,23 +90,28 @@ pub fn main() -> Result<()> {
                     );
 
                     // 3. Perform Matching
-                    // Use a conservative threshold: 20% bit error rate (32 bits * 0.20 = 6.4 bits per hash)
+                    // Use a conservative threshold: 20% bit error rate
                     let threshold = (ref_fingerprinted.fingerprint().len() as u32 * 32) / 5;
 
-                    let result = fingerprinted.find_match(
-                        &matcher,
+                    let match_index = matcher.find_match(
                         ref_fingerprinted.fingerprint(),
+                        ep_fingerprint,
                         threshold,
-                    )?;
+                    );
 
-                    match result.match_index {
+                    match match_index {
                         Some(idx) => {
-                            // Each Chromaprint hash usually represents ~0.1s of audio (depending on parameters)
-                            // Our default is 11025Hz and default chromaprint window settings.
-                            log::info!("MATCH FOUND for '{}' at index {}.", base, idx);
+                            log::info!(
+                                "MATCH FOUND for '{}' within search space at index {}.",
+                                base,
+                                idx
+                            );
                         }
                         None => {
-                            log::warn!("No suitable match found for '{}'.", base);
+                            log::warn!(
+                                "No suitable match found for '{}' within search space.",
+                                base
+                            );
                         }
                     }
                 } else {

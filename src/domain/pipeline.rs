@@ -18,6 +18,22 @@ pub struct SelectedTrack {
     pub(crate) track_id: u32,
 }
 
+/// State after audio extraction: contains buffered audio for intro and outro search spaces.
+#[derive(Debug)]
+pub struct SegmentedAudio {
+    pub(crate) path: PathBuf,
+    pub(crate) intro_buffer: AudioBuffer,
+    pub(crate) outro_buffer: AudioBuffer,
+}
+
+/// State after fingerprint generation: contains fingerprints for intro and outro search spaces.
+#[derive(Debug)]
+pub struct SegmentedFingerprints {
+    pub(crate) path: PathBuf,
+    pub(crate) intro_fingerprint: Vec<u32>,
+    pub(crate) outro_fingerprint: Vec<u32>,
+}
+
 /// State after audio extraction: contains raw samples.
 #[derive(Debug)]
 pub struct ExtractedAudio {
@@ -69,6 +85,54 @@ impl SelectedTrack {
             path: self.path,
             buffer,
         })
+    }
+
+    /// Transitions to SegmentedAudio state using intro (0.0-0.25) and outro (0.7-1.0) heuristics.
+    pub fn extract_segmented_audio<E: AudioExtractor>(
+        self,
+        extractor: &E,
+    ) -> Result<SegmentedAudio, DomainError> {
+        let intro_buffer =
+            extractor.extract_audio_relative(&self.path, self.track_id, 0.0, 0.25)?;
+        let outro_buffer = extractor.extract_audio_relative(&self.path, self.track_id, 0.7, 1.0)?;
+        Ok(SegmentedAudio {
+            path: self.path,
+            intro_buffer,
+            outro_buffer,
+        })
+    }
+}
+
+impl SegmentedAudio {
+    /// Transitions to SegmentedFingerprints state by generating fingerprints for both segments.
+    pub fn generate_segmented_fingerprints<F: Fingerprinter>(
+        self,
+        fingerprinter: &F,
+    ) -> Result<SegmentedFingerprints, DomainError> {
+        let intro_fingerprint = fingerprinter.generate_fingerprint(&self.intro_buffer)?;
+        let outro_fingerprint = fingerprinter.generate_fingerprint(&self.outro_buffer)?;
+        Ok(SegmentedFingerprints {
+            path: self.path,
+            intro_fingerprint,
+            outro_fingerprint,
+        })
+    }
+}
+
+impl SegmentedFingerprints {
+    /// Returns a reference to the intro fingerprint.
+    pub fn intro_fingerprint(&self) -> &[u32] {
+        &self.intro_fingerprint
+    }
+
+    /// Returns a reference to the outro fingerprint.
+    pub fn outro_fingerprint(&self) -> &[u32] {
+        &self.outro_fingerprint
+    }
+
+    /// Returns a reference to the source path.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 }
 
