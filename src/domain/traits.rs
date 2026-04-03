@@ -12,9 +12,10 @@ pub trait TrackSelector {
 
 /// Port for extracting audio from media files.
 pub trait AudioExtractor {
+    /// Returns the total duration of the track in seconds.
+    fn get_duration(&self, path: &Path, track_id: u32) -> Result<f64, DomainError>;
+
     /// Extracts and resamples audio from the given file.
-    ///
-    /// Implementations should handle track selection if multiple tracks are present.
     fn extract_audio(&self, path: &Path, track_id: u32) -> Result<AudioBuffer, DomainError>;
 
     /// Extracts and resamples a specific range of audio from the given file.

@@ -92,6 +92,67 @@ impl SymphoniaAdapter {
 
         Ok(probed.format)
     }
+
+    /// Loads a WAV file directly into an AudioBuffer (assuming it matches TARGET specifications).
+    pub fn load_wav(&self, path: &Path) -> Result<AudioBuffer, DomainError> {
+        let mut format = self.probe_file(path)?;
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .ok_or_else(|| DomainError::ExtractionError("No audio track in WAV".to_string()))?;
+
+        let track_id = track.id;
+        let native_rate = track
+            .codec_params
+            .sample_rate
+            .ok_or_else(|| DomainError::ExtractionError("No sample rate in WAV".to_string()))?;
+        let native_channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1) as u16;
+
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &DecoderOptions::default())
+            .map_err(|e| DomainError::ExtractionError(e.to_string()))?;
+
+        let mut audio_samples: Vec<i16> = Vec::new();
+        let mut sample_buf = None;
+
+        loop {
+            let packet = match format.next_packet() {
+                Ok(packet) => packet,
+                Err(SymphoniaError::IoError(err))
+                    if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(err) => return Err(DomainError::ExtractionError(err.to_string())),
+            };
+
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            match decoder.decode(&packet) {
+                Ok(audio_buf) => {
+                    if sample_buf.is_none() {
+                        let spec = *audio_buf.spec();
+                        sample_buf =
+                            Some(SampleBuffer::<i16>::new(audio_buf.capacity() as u64, spec));
+                    }
+                    if let Some(buf) = &mut sample_buf {
+                        buf.copy_interleaved_ref(audio_buf);
+                        audio_samples.extend_from_slice(buf.samples());
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+
+        Ok(AudioBuffer::new(
+            audio_samples,
+            native_rate,
+            native_channels,
+        ))
+    }
 }
 
 impl TrackSelector for SymphoniaAdapter {
@@ -139,6 +200,23 @@ impl TrackSelector for SymphoniaAdapter {
 }
 
 impl AudioExtractor for SymphoniaAdapter {
+    fn get_duration(&self, path: &Path, track_id: u32) -> Result<f64, DomainError> {
+        let format = self.probe_file(path)?;
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Track not found".to_string()))?;
+
+        let time_base = track
+            .codec_params
+            .time_base
+            .unwrap_or(symphonia::core::units::TimeBase::new(1, 1));
+        let duration_frames = track.codec_params.n_frames.unwrap_or(0);
+        Ok(time_base.calc_time(duration_frames).seconds as f64
+            + time_base.calc_time(duration_frames).frac)
+    }
+
     fn extract_audio(&self, path: &Path, track_id: u32) -> Result<AudioBuffer, DomainError> {
         debug!("Initializing Symphonia for full track extraction with resampling");
         let mut format = self.probe_file(path)?;

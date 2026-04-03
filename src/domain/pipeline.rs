@@ -33,6 +33,7 @@ pub struct SegmentedAudio {
     pub(crate) path: PathBuf,
     pub(crate) buffer: AudioBuffer,
     pub(crate) space: SearchSpace,
+    pub(crate) offset_sec: f64,
 }
 
 /// State after fingerprint generation: contains the fingerprint for a specific search space.
@@ -41,6 +42,7 @@ pub struct SegmentedFingerprints {
     pub(crate) path: PathBuf,
     pub(crate) fingerprint: Vec<u32>,
     pub(crate) space: SearchSpace,
+    pub(crate) offset_sec: f64,
 }
 
 /// State after audio extraction: contains raw samples.
@@ -102,15 +104,26 @@ impl SelectedTrack {
         extractor: &E,
         space: SearchSpace,
     ) -> Result<SegmentedAudio, DomainError> {
-        let (start, end) = match space {
+        let (start_percent, end_percent) = match space {
             SearchSpace::Intro => (0.0, 0.25),
             SearchSpace::Outro => (0.7, 1.0),
         };
-        let buffer = extractor.extract_audio_relative(&self.path, self.track_id, start, end)?;
+
+        let total_duration = extractor.get_duration(&self.path, self.track_id)?;
+        let offset_sec = total_duration * start_percent;
+
+        let buffer = extractor.extract_audio_relative(
+            &self.path,
+            self.track_id,
+            start_percent,
+            end_percent,
+        )?;
+
         Ok(SegmentedAudio {
             path: self.path,
             buffer,
             space,
+            offset_sec,
         })
     }
 }
@@ -126,6 +139,7 @@ impl SegmentedAudio {
             path: self.path,
             fingerprint,
             space: self.space,
+            offset_sec: self.offset_sec,
         })
     }
 }
@@ -139,6 +153,11 @@ impl SegmentedFingerprints {
     /// Returns the search space.
     pub fn space(&self) -> SearchSpace {
         self.space
+    }
+
+    /// Returns the start offset of the search space in seconds.
+    pub fn offset_sec(&self) -> f64 {
+        self.offset_sec
     }
 
     /// Returns a reference to the source path.

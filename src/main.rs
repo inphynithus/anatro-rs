@@ -20,7 +20,7 @@ use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::matcher::SlidingWindowMatcher;
 use anatro_rs::domain::pipeline::{SearchSpace, SourceMedia};
 use anatro_rs::domain::traits::{
-    AudioExtractor, FingerprintMatcher, PcmExporter, SampleExporter, TrackSelector,
+    AudioExtractor, FingerprintMatcher, Fingerprinter, PcmExporter, SampleExporter, TrackSelector,
 };
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
@@ -72,31 +72,53 @@ pub fn main() -> Result<()> {
                 segmented_fingerprints.fingerprint().len()
             );
 
-            // 3. Process Reference Sample
-            let ref_source = SourceMedia::new(sample.clone());
-            let ref_selected = ref_source.select_track(&extractor)?;
-            let ref_extracted = ref_selected.extract_audio(&extractor)?;
-            let ref_fingerprinted = ref_extracted.generate_fingerprint(&chromaprint)?;
+            // 3. Process Reference Sample (Load directly if WAV)
+            let ref_fingerprinted = if sample.extension().and_then(|e| e.to_str()) == Some("wav") {
+                log::info!(
+                    "Loading reference sample directly from WAV: {}",
+                    sample.display()
+                );
+                let buffer = extractor.load_wav(&sample)?;
+                chromaprint.generate_fingerprint(&buffer)?
+            } else {
+                log::info!("Extracting reference sample: {}", sample.display());
+                let ref_source = SourceMedia::new(sample.clone());
+                let ref_selected = ref_source.select_track(&extractor)?;
+                let ref_extracted = ref_selected.extract_audio(&extractor)?;
+                chromaprint.generate_fingerprint(ref_extracted.buffer())?
+            };
 
             log::info!(
                 "Reference '{}' fingerprint generated ({} hashes).",
                 sample_name,
-                ref_fingerprinted.fingerprint().len()
+                ref_fingerprinted.len()
             );
 
             // 4. Perform Matching
             // Use a conservative threshold: 20% bit error rate
-            let threshold = (ref_fingerprinted.fingerprint().len() as u32 * 32) / 5;
+            let threshold = (ref_fingerprinted.len() as u32 * 32) / 5;
 
             let match_index = matcher.find_match(
-                ref_fingerprinted.fingerprint(),
+                &ref_fingerprinted,
                 segmented_fingerprints.fingerprint(),
                 threshold,
             );
 
             match match_index {
                 Some(idx) => {
-                    log::info!("MATCH FOUND for '{}' at index {}.", sample_name, idx);
+                    // Heuristic: each hash is approx 0.124s (11025 / 1365 or similar in chromaprint)
+                    let tick_duration = 0.124;
+                    let start_in_space = idx as f64 * tick_duration;
+                    let start_total = segmented_fingerprints.offset_sec() + start_in_space;
+                    let duration_sample = ref_fingerprinted.len() as f64 * tick_duration;
+
+                    log::info!(
+                        "MATCH FOUND for '{}'! Start: {:.2}s, End: {:.2}s (Total: {:.2}s)",
+                        sample_name,
+                        start_total,
+                        start_total + duration_sample,
+                        duration_sample
+                    );
                 }
                 None => {
                     log::warn!("No suitable match found for '{}'.", sample_name);
