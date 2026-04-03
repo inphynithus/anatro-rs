@@ -10,6 +10,22 @@ pub trait AudioExtractor {
     ///
     /// Implementations should handle track selection if multiple tracks are present.
     fn extract_audio(&self, path: &Path) -> Result<AudioBuffer, DomainError>;
+
+    /// Extracts and resamples a specific range of audio from the given file.
+    fn extract_audio_range(
+        &self,
+        path: &Path,
+        start_sec: f64,
+        end_sec: f64,
+    ) -> Result<AudioBuffer, DomainError>;
+
+    /// Extracts and resamples a specific range of audio using relative percentages.
+    fn extract_audio_relative(
+        &self,
+        path: &Path,
+        start_percent: f64,
+        end_percent: f64,
+    ) -> Result<AudioBuffer, DomainError>;
 }
 
 /// Port for generating fingerprints from audio buffers.

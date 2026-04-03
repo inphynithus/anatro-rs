@@ -18,7 +18,7 @@
 
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::pipeline::SourceMedia;
-use anatro_rs::domain::traits::SampleExporter;
+use anatro_rs::domain::traits::{AudioExtractor, PcmExporter, SampleExporter};
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::Result;
@@ -87,6 +87,59 @@ pub fn main() -> Result<()> {
 
             log::info!(
                 "Sample extracted successfully to: {}",
+                final_output.display()
+            );
+        }
+        Commands::SampleTest {
+            target,
+            range,
+            output,
+        } => {
+            let extractor = SymphoniaAdapter::new();
+
+            // Handle output path: if it's a simple name, use CWD.
+            let mut final_output = output;
+
+            if final_output.extension().is_none() {
+                let _ = final_output.set_extension("wav");
+            }
+
+            if final_output.parent() == Some(std::path::Path::new("")) {
+                let cwd = env::current_dir()?;
+                final_output = cwd.join(final_output);
+            }
+
+            log::info!("Sample Test initialized for file: {}", target.display());
+            log::info!("Range requested: {}", range);
+            log::info!("Output path: {}", final_output.display());
+            log::info!("NOTE: Extracting in MONO and resampled to 11025Hz for quality testing.");
+
+            let buffer = if range.contains('-') {
+                let parts: Vec<&str> = range.split('-').collect();
+                if parts.len() != 2 {
+                    return Err(anyhow::anyhow!(
+                        "Range must be in 'HH:MM:SS-HH:MM:SS' format"
+                    ));
+                }
+                let start_sec = extractor.hms_to_seconds(parts[0])?;
+                let end_sec = extractor.hms_to_seconds(parts[1])?;
+                extractor.extract_audio_range(&target, start_sec, end_sec)?
+            } else if range.contains(',') {
+                let parts: Vec<&str> = range.split(',').collect();
+                if parts.len() != 2 {
+                    return Err(anyhow::anyhow!("Relative range must be 'start,end' floats"));
+                }
+                let start_percent: f64 = parts[0].parse()?;
+                let end_percent: f64 = parts[1].parse()?;
+                extractor.extract_audio_relative(&target, start_percent, end_percent)?
+            } else {
+                return Err(anyhow::anyhow!("Range format not recognized"));
+            };
+
+            extractor.export_wav(&buffer, &final_output)?;
+
+            log::info!(
+                "Sample test extracted successfully to: {}",
                 final_output.display()
             );
         }

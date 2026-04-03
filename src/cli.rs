@@ -38,4 +38,16 @@ pub enum Commands {
         #[arg(short = 'o', long = "output", value_name = "FILE")]
         output: PathBuf,
     },
+    /// Extracts an audio sample, downmixes to mono and resamples to 11025Hz for testing.
+    SampleTest {
+        /// The path to the media file to process (e.g., an MKV or MP4 episode).
+        #[arg(short = 't', long = "target", value_name = "FILE")]
+        target: PathBuf,
+        /// The timestamp range for extraction (e.g., '00:01:00-00:02:00').
+        #[arg(short = 'r', long = "range", value_name = "HH:MM:SS-HH:MM:SS")]
+        range: String,
+        /// The path to save the extracted sample.
+        #[arg(short = 'o', long = "output", value_name = "FILE")]
+        output: PathBuf,
+    },
 }
