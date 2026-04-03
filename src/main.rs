@@ -67,6 +67,18 @@ pub fn main() -> Result<()> {
                 );
             }
         }
+        Commands::SampleExtract { target, range } => {
+            #[allow(unused_results)]
+            {
+                println!("Sample Extract initialized for file: {}", target.display());
+                println!("Range requested: {}", range);
+                println!(
+                    "NOTE: The implementation will eventually prompt for track selection if multiple audio tracks are present (e.g., using a numbered list 1..N and metadata). The user will select a track by typing the number and pressing Enter. Currently, the sample extraction is intended to be a direct cut without downsampling or mono conversion."
+                );
+            }
+
+            // Placeholder for sample extraction logic
+        }
     }
 
     Ok(())

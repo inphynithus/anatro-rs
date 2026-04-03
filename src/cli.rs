@@ -26,4 +26,13 @@ pub enum Commands {
         #[arg(short = 's', long = "sample", value_name = "FILE")]
         sample: PathBuf,
     },
+    /// Extracts an audio sample from a media file for a given timestamp range.
+    SampleExtract {
+        /// The path to the media file to process (e.g., an MKV or MP4 episode).
+        #[arg(short = 't', long = "target", value_name = "FILE")]
+        target: PathBuf,
+        /// The timestamp range for extraction (e.g., '00:01:00-00:02:00').
+        #[arg(short = 'r', long = "range", value_name = "HH:MM:SS-HH:MM:SS")]
+        range: String,
+    },
 }
