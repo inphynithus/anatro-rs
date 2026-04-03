@@ -28,6 +28,9 @@ pub enum Commands {
         /// Positive or negative offset in seconds to apply to the match result.
         #[arg(short = 'f', long = "offset", default_value_t = 0.0)]
         offset: f64,
+        /// The assumed length of the intro/outro in seconds for reporting.
+        #[arg(short = 'l', long = "length", default_value_t = 90.0)]
+        length: f64,
     },
     /// Extracts an audio sample from a media file for a given timestamp range.
     SampleExtract {

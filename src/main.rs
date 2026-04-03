@@ -28,6 +28,14 @@ use anyhow::Result;
 use clap::Parser;
 use std::env;
 
+/// Helper to format seconds into MM:SS.
+fn format_time(seconds: f64) -> String {
+    let total_secs = seconds.round() as i64;
+    let mins = total_secs / 60;
+    let secs = total_secs % 60;
+    format!("{:02}:{:02}", mins, secs)
+}
+
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
     // Initialize logging: default to 'info' for our app and 'warn' for noisy dependencies.
@@ -44,6 +52,7 @@ pub fn main() -> Result<()> {
             target,
             sample,
             offset,
+            length,
         } => {
             let extractor = SymphoniaAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
@@ -54,6 +63,7 @@ pub fn main() -> Result<()> {
             if offset != 0.0 {
                 log::info!("Applying user offset: {:.2}s", offset);
             }
+            log::info!("Reporting detected length: {:.2}s", length);
 
             // 1. Determine Search Space based on sample name
             let sample_name = sample.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -117,14 +127,17 @@ pub fn main() -> Result<()> {
                     let tick_duration = 0.128;
                     let start_in_space = idx as f64 * tick_duration;
                     let start_total = segmented_fingerprints.offset_sec() + start_in_space + offset;
-                    let duration_sample = ref_fingerprinted.len() as f64 * tick_duration;
+
+                    let end_total = start_total + length;
 
                     log::info!(
-                        "MATCH FOUND for '{}'! Start: {:.2}s, End: {:.2}s (Total: {:.2}s)",
+                        "MATCH FOUND for '{}'! Range: {} - {} ({:.2}s - {:.2}s) [Duration: {:.2}s]",
                         sample_name,
+                        format_time(start_total),
+                        format_time(end_total),
                         start_total,
-                        start_total + duration_sample,
-                        duration_sample
+                        end_total,
+                        length
                     );
                 }
                 None => {
