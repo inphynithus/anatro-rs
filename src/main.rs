@@ -18,29 +18,26 @@
 
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::pipeline::SourceMedia;
+use anatro_rs::domain::traits::SampleExporter;
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::ffmpeg::FfmpegAdapter;
 use anyhow::Result;
 use clap::Parser;
+use std::env;
 
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Initialize logging from environment variable (default to info)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    #[allow(unused_results)]
-    {
-        println!("anatro-rs initialized.");
-    }
+    let cli = Cli::parse();
 
     match cli.command {
         Commands::Scan { sample } => {
             let ffmpeg = FfmpegAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
 
-            #[allow(unused_results)]
-            {
-                println!("Processing media file: {}", sample.display());
-            }
+            log::info!("Processing media file: {}", sample.display());
 
             let source = SourceMedia::new(sample);
 
@@ -48,36 +45,50 @@ pub fn main() -> Result<()> {
             // 1. Extract Audio (includes track selection and mono/downsampling)
             let extracted = source.extract_audio(&ffmpeg)?;
 
-            #[allow(unused_results)]
-            {
-                println!(
-                    "Audio extracted successfully ({} samples).",
-                    extracted.buffer().samples().len()
-                );
-            }
+            log::info!(
+                "Audio extracted successfully ({} samples).",
+                extracted.buffer().samples().len()
+            );
 
             // 2. Generate Fingerprint
             let fingerprinted = extracted.generate_fingerprint(&chromaprint)?;
 
-            #[allow(unused_results)]
-            {
-                println!(
-                    "Fingerprint generated successfully ({} hashes).",
-                    fingerprinted.fingerprint().len()
-                );
-            }
+            log::info!(
+                "Fingerprint generated successfully ({} hashes).",
+                fingerprinted.fingerprint().len()
+            );
         }
-        Commands::SampleExtract { target, range } => {
-            #[allow(unused_results)]
-            {
-                println!("Sample Extract initialized for file: {}", target.display());
-                println!("Range requested: {}", range);
-                println!(
-                    "NOTE: The implementation will eventually prompt for track selection if multiple audio tracks are present (e.g., using a numbered list 1..N and metadata). The user will select a track by typing the number and pressing Enter. Currently, the sample extraction is intended to be a direct cut without downsampling or mono conversion."
-                );
+        Commands::SampleExtract {
+            target,
+            range,
+            output,
+        } => {
+            let ffmpeg = FfmpegAdapter::new();
+
+            // Handle output path: if it's a simple name, use CWD.
+            // Automatically append .wav for internal testing if no extension is provided.
+            let mut final_output = output;
+
+            if final_output.extension().is_none() {
+                let _ = final_output.set_extension("wav");
             }
 
-            // Placeholder for sample extraction logic
+            if final_output.parent() == Some(std::path::Path::new("")) {
+                let cwd = env::current_dir()?;
+                final_output = cwd.join(final_output);
+            }
+
+            log::info!("Sample Extract initialized for file: {}", target.display());
+            log::info!("Range requested: {}", range);
+            log::info!("Output path: {}", final_output.display());
+            log::info!("NOTE: Using sample-accurate PCM extraction with WAV export.");
+
+            ffmpeg.export_sample(&target, &final_output, &range)?;
+
+            log::info!(
+                "Sample extracted successfully to: {}",
+                final_output.display()
+            );
         }
     }
 
