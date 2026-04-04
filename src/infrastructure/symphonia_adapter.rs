@@ -153,259 +153,19 @@ impl SymphoniaAdapter {
             native_channels,
         ))
     }
-}
 
-impl TrackSelector for SymphoniaAdapter {
-    fn select_track(&self, path: &Path) -> Result<u32, DomainError> {
-        let format = self.probe_file(path)?;
-
-        let tracks: Vec<_> = format
-            .tracks()
-            .iter()
-            .filter(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .collect();
-
-        if tracks.is_empty() {
-            return Err(DomainError::ExtractionError(
-                "No audio tracks found".to_string(),
-            ));
-        }
-
-        if tracks.len() == 1 {
-            return Ok(tracks[0].id);
-        }
-
-        // Multiple streams: prompt user
-        let options: Vec<String> = tracks
-            .iter()
-            .map(|t| {
-                format!(
-                    "Track {}: {} channels, {} Hz",
-                    t.id,
-                    t.codec_params.channels.map(|c| c.count()).unwrap_or(0),
-                    t.codec_params.sample_rate.unwrap_or(0)
-                )
-            })
-            .collect();
-
-        let selection = Select::new()
-            .with_prompt("Multiple audio tracks found. Please select one:")
-            .items(&options)
-            .default(0)
-            .interact()
-            .map_err(|e| DomainError::InputError(e.to_string()))?;
-
-        Ok(tracks[selection].id)
-    }
-}
-
-impl AudioExtractor for SymphoniaAdapter {
-    fn get_duration(&self, path: &Path, track_id: u32) -> Result<f64, DomainError> {
-        let format = self.probe_file(path)?;
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.id == track_id)
-            .ok_or_else(|| DomainError::ExtractionError("Track not found".to_string()))?;
-
-        let time_base = track
-            .codec_params
-            .time_base
-            .unwrap_or(symphonia::core::units::TimeBase::new(1, 1));
-        let duration_frames = track.codec_params.n_frames.unwrap_or(0);
-        Ok(time_base.calc_time(duration_frames).seconds as f64
-            + time_base.calc_time(duration_frames).frac)
-    }
-
-    fn extract_audio(&self, path: &Path, track_id: u32) -> Result<AudioBuffer, DomainError> {
-        debug!("Initializing Symphonia for full track extraction with resampling");
-        let mut format = self.probe_file(path)?;
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.id == track_id)
-            .ok_or_else(|| DomainError::ExtractionError("Selected track not found".to_string()))?;
-
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &DecoderOptions::default())
-            .map_err(|e| {
-                DomainError::ExtractionError(format!("Failed to create decoder: {}", e))
-            })?;
-
-        let mut audio_samples: Vec<i16> = Vec::new();
-        let mut sample_buf = None;
-        let mut resampler = None;
-        let mut actual_spec: Option<SignalSpec> = None;
-
-        let chunk_size = 1024;
-        let mut resampler_input_data = vec![vec![0.0f32; chunk_size]; TARGET_CHANNELS as usize];
-        let mut input_pos = 0;
-        let mut resample_ratio = 1.0f64;
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(SymphoniaError::IoError(err))
-                    if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break;
-                }
-                Err(err) => return Err(DomainError::ExtractionError(err.to_string())),
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            match decoder.decode(&packet) {
-                Ok(audio_buf) => {
-                    if actual_spec.is_none() {
-                        let spec = *audio_buf.spec();
-                        debug!(
-                            "Actual decoded spec: {} channels, {} Hz",
-                            spec.channels.count(),
-                            spec.rate
-                        );
-                        actual_spec = Some(spec);
-
-                        // Initialize resampler with actual rate
-                        resample_ratio = TARGET_SAMPLE_RATE as f64 / spec.rate as f64;
-                        let params = SincInterpolationParameters {
-                            sinc_len: 512,
-                            f_cutoff: 0.95,
-                            interpolation: SincInterpolationType::Cubic,
-                            oversampling_factor: 128,
-                            window: WindowFunction::BlackmanHarris2,
-                        };
-
-                        resampler = Some(
-                            Async::<f32>::new_sinc(
-                                resample_ratio,
-                                2.0,
-                                &params,
-                                chunk_size,
-                                TARGET_CHANNELS as usize,
-                                FixedAsync::Input,
-                            )
-                            .map_err(|e| {
-                                DomainError::ExtractionError(format!(
-                                    "Failed to create resampler: {}",
-                                    e
-                                ))
-                            })?,
-                        );
-                    }
-
-                    if sample_buf.is_none() {
-                        let spec = *audio_buf.spec();
-                        let duration = audio_buf.capacity() as u64;
-                        sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
-                    }
-
-                    if let (Some(buf), Some(rs), Some(spec)) =
-                        (&mut sample_buf, &mut resampler, actual_spec)
-                    {
-                        buf.copy_interleaved_ref(audio_buf);
-                        let samples = buf.samples();
-                        let channels = spec.channels.count();
-
-                        let mut i = 0;
-                        while i < samples.len() {
-                            let mut mono_sample = 0.0f32;
-                            let count = (channels).min(samples.len() - i);
-                            for _ in 0..count {
-                                mono_sample += samples[i];
-                                i += 1;
-                            }
-                            mono_sample /= count as f32;
-
-                            resampler_input_data[0][input_pos] = mono_sample;
-                            input_pos += 1;
-
-                            if input_pos == chunk_size {
-                                let input_adapter = SequentialSliceOfVecs::new(
-                                    &resampler_input_data,
-                                    TARGET_CHANNELS as usize,
-                                    chunk_size,
-                                )
-                                .map_err(|e| {
-                                    DomainError::ExtractionError(format!("Buffer error: {}", e))
-                                })?;
-
-                                let resampled =
-                                    rs.process(&input_adapter, 0, None).map_err(|e| {
-                                        DomainError::ExtractionError(format!(
-                                            "Resampling error: {}",
-                                            e
-                                        ))
-                                    })?;
-
-                                for s in resampled.take_data() {
-                                    audio_samples
-                                        .push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
-                                }
-                                input_pos = 0;
-                            }
-                        }
-                    }
-                }
-                Err(SymphoniaError::DecodeError(err)) => {
-                    warn!("Decode error: {}", err);
-                    continue;
-                }
-                Err(err) => return Err(DomainError::ExtractionError(err.to_string())),
-            }
-        }
-
-        // Flush remaining samples
-        if let (Some(rs), Some(_spec), true) = (&mut resampler, actual_spec, input_pos > 0) {
-            for sample in resampler_input_data[0].iter_mut().skip(input_pos) {
-                *sample = 0.0;
-            }
-            let input_adapter = SequentialSliceOfVecs::new(
-                &resampler_input_data,
-                TARGET_CHANNELS as usize,
-                chunk_size,
-            )
-            .map_err(|e| DomainError::ExtractionError(format!("Buffer error: {}", e)))?;
-
-            let resampled = rs.process(&input_adapter, 0, None).map_err(|e| {
-                DomainError::ExtractionError(format!("Resampling error during flush: {}", e))
-            })?;
-
-            let resampled_count = (input_pos as f64 * resample_ratio).round() as usize;
-            for s in resampled.take_data().into_iter().take(resampled_count) {
-                audio_samples.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
-            }
-        }
-
-        Ok(AudioBuffer::new(
-            audio_samples,
-            TARGET_SAMPLE_RATE,
-            TARGET_CHANNELS,
-        ))
-    }
-
-    fn extract_audio_range(
+    /// Internal helper for range extraction with resampling.
+    fn extract_audio_range_internal(
         &self,
-        path: &Path,
+        mut format: Box<dyn FormatReader>,
         track_id: u32,
         start_sec: f64,
         end_sec: f64,
     ) -> Result<AudioBuffer, DomainError> {
         debug!(
-            "Initializing Symphonia for range track extraction with resampling: start {:.3}s, end {:.3}s",
+            "Internal extraction: start {:.3}s, end {:.3}s",
             start_sec, end_sec
         );
-
-        if start_sec >= end_sec {
-            return Err(DomainError::InputError(
-                "End time must be after start time".to_string(),
-            ));
-        }
-
-        let mut format = self.probe_file(path)?;
 
         let track = format
             .tracks()
@@ -484,7 +244,6 @@ impl AudioExtractor for SymphoniaAdapter {
                         );
                         actual_spec = Some(spec);
 
-                        // Initialize resampler with actual rate
                         resample_ratio = TARGET_SAMPLE_RATE as f64 / spec.rate as f64;
                         let params = SincInterpolationParameters {
                             sinc_len: 512,
@@ -534,7 +293,6 @@ impl AudioExtractor for SymphoniaAdapter {
 
                             let count = channels.min(samples.len() - s_idx);
                             if current_frame_pts >= start_pts {
-                                // Mix down to mono
                                 let mut mono_sample = 0.0f32;
                                 for j in 0..count {
                                     mono_sample += samples[s_idx + j];
@@ -582,7 +340,6 @@ impl AudioExtractor for SymphoniaAdapter {
             }
         }
 
-        // Flush remaining samples
         if let (Some(rs), Some(_spec), true) = (&mut resampler, actual_spec, input_pos > 0) {
             for sample in resampler_input_data[0].iter_mut().skip(input_pos) {
                 *sample = 0.0;
@@ -609,6 +366,83 @@ impl AudioExtractor for SymphoniaAdapter {
             TARGET_SAMPLE_RATE,
             TARGET_CHANNELS,
         ))
+    }
+}
+
+impl TrackSelector for SymphoniaAdapter {
+    fn select_track(&self, path: &Path) -> Result<u32, DomainError> {
+        let format = self.probe_file(path)?;
+
+        let tracks: Vec<_> = format
+            .tracks()
+            .iter()
+            .filter(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .collect();
+
+        if tracks.is_empty() {
+            return Err(DomainError::ExtractionError(
+                "No audio tracks found".to_string(),
+            ));
+        }
+
+        if tracks.len() == 1 {
+            return Ok(tracks[0].id);
+        }
+
+        let options: Vec<String> = tracks
+            .iter()
+            .map(|t| {
+                format!(
+                    "Track {}: {} channels, {} Hz",
+                    t.id,
+                    t.codec_params.channels.map(|c| c.count()).unwrap_or(0),
+                    t.codec_params.sample_rate.unwrap_or(0)
+                )
+            })
+            .collect();
+
+        let selection = Select::new()
+            .with_prompt("Multiple audio tracks found. Please select one:")
+            .items(&options)
+            .default(0)
+            .interact()
+            .map_err(|e| DomainError::InputError(e.to_string()))?;
+
+        Ok(tracks[selection].id)
+    }
+}
+
+impl AudioExtractor for SymphoniaAdapter {
+    fn get_duration(&self, path: &Path, track_id: u32) -> Result<f64, DomainError> {
+        let format = self.probe_file(path)?;
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.id == track_id)
+            .ok_or_else(|| DomainError::ExtractionError("Track not found".to_string()))?;
+
+        let time_base = track
+            .codec_params
+            .time_base
+            .unwrap_or(symphonia::core::units::TimeBase::new(1, 1));
+        let duration_frames = track.codec_params.n_frames.unwrap_or(0);
+        Ok(time_base.calc_time(duration_frames).seconds as f64
+            + time_base.calc_time(duration_frames).frac)
+    }
+
+    fn extract_audio(&self, path: &Path, track_id: u32) -> Result<AudioBuffer, DomainError> {
+        self.extract_audio_relative(path, track_id, 0.0, 1.0)
+    }
+
+    fn extract_audio_range(
+        &self,
+        path: &Path,
+        track_id: u32,
+        start_sec: f64,
+        end_sec: f64,
+    ) -> Result<AudioBuffer, DomainError> {
+        let format = self.probe_file(path)?;
+        self.extract_audio_range_internal(format, track_id, start_sec, end_sec)
     }
 
     fn extract_audio_relative(
@@ -640,8 +474,8 @@ impl AudioExtractor for SymphoniaAdapter {
             ));
         }
 
-        self.extract_audio_range(
-            path,
+        self.extract_audio_range_internal(
+            format,
             track_id,
             duration_secs * start_percent,
             duration_secs * end_percent,
