@@ -20,7 +20,7 @@ use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::matcher::SlidingWindowMatcher;
 use anatro_rs::domain::pipeline::{SearchSpace, SourceMedia};
 use anatro_rs::domain::traits::{
-    AudioExtractor, FingerprintMatcher, Fingerprinter, PcmExporter, SampleExporter, TrackSelector,
+    AudioExtractor, FingerprintMatcher, Fingerprinter, PcmExporter, TrackSelector,
 };
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
@@ -168,39 +168,9 @@ pub fn main() -> Result<()> {
             log::info!("Sample Extract initialized for file: {}", target.display());
             log::info!("Range requested: {}", range);
             log::info!("Output path: {}", final_output.display());
-            log::info!("NOTE: Using sample-accurate PCM extraction with WAV export.");
-
-            let track_id = extractor.select_track(&target)?;
-            extractor.export_sample(&target, track_id, &final_output, &range)?;
-
             log::info!(
-                "Sample extracted successfully to: {}",
-                final_output.display()
+                "NOTE: Extracting in MONO and resampled to 11025Hz for fingerprint compatibility."
             );
-        }
-        Commands::SampleTest {
-            target,
-            range,
-            output,
-        } => {
-            let extractor = SymphoniaAdapter::new();
-
-            // Handle output path: if it's a simple name, use CWD.
-            let mut final_output = output;
-
-            if final_output.extension().is_none() {
-                let _ = final_output.set_extension("wav");
-            }
-
-            if final_output.parent() == Some(std::path::Path::new("")) {
-                let cwd = env::current_dir()?;
-                final_output = cwd.join(final_output);
-            }
-
-            log::info!("Sample Test initialized for file: {}", target.display());
-            log::info!("Range requested: {}", range);
-            log::info!("Output path: {}", final_output.display());
-            log::info!("NOTE: Extracting in MONO and resampled to 11025Hz for quality testing.");
 
             let track_id = extractor.select_track(&target)?;
 
@@ -229,7 +199,7 @@ pub fn main() -> Result<()> {
             extractor.export_wav(&buffer, &final_output)?;
 
             log::info!(
-                "Sample test extracted successfully to: {}",
+                "Sample extracted successfully to: {}",
                 final_output.display()
             );
         }
