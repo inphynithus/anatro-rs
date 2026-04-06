@@ -16,7 +16,7 @@ pub struct SourceMedia {
 pub enum SearchSpace {
     /// Intro range: 0.0-0.25
     Intro,
-    /// Outro range: 0.7-1.0
+    /// Outro range: 0.75-1.0
     Outro,
 }
 
@@ -106,7 +106,7 @@ impl SelectedTrack {
     ) -> Result<SegmentedAudio, DomainError> {
         let (start_percent, end_percent) = match space {
             SearchSpace::Intro => (0.0, 0.25),
-            SearchSpace::Outro => (0.7, 1.0),
+            SearchSpace::Outro => (0.75, 1.0),
         };
 
         let total_duration = extractor.get_duration(&self.path, self.track_id)?;
