@@ -31,6 +31,9 @@ pub enum Commands {
         /// The reference episode file (name or path) to extract the samples from.
         #[arg(long = "sample-reference", value_name = "FILE")]
         sample_reference: String,
+        /// The size of the reference sample to extract in seconds.
+        #[arg(long = "sample-size", default_value_t = 10.0)]
+        sample_size: f64,
         /// Positive or negative offset in seconds to apply to the match result.
         #[arg(short = 'f', long = "offset", default_value_t = 0.0)]
         offset: f64,

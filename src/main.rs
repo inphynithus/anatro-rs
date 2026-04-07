@@ -69,6 +69,7 @@ pub fn main() -> Result<()> {
             sample_intro,
             sample_outro,
             sample_reference,
+            sample_size,
             offset,
             length,
             progress,
@@ -92,12 +93,13 @@ pub fn main() -> Result<()> {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_file()
-                    && let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        let ext = ext.to_lowercase();
-                        if ext == "mkv" || ext == "mp4" {
-                            files.push(path);
-                        }
+                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                {
+                    let ext = ext.to_lowercase();
+                    if ext == "mkv" || ext == "mp4" {
+                        files.push(path);
                     }
+                }
             }
             files.sort();
 
@@ -142,12 +144,16 @@ pub fn main() -> Result<()> {
 
             let mut intro_fingerprint = None;
             if let Some(ref intro) = sample_intro {
-                log::info!("Extracting intro sample from reference at {}", intro);
+                log::info!(
+                    "Extracting intro sample ({:.1}s) from reference at {}",
+                    sample_size,
+                    intro
+                );
                 let start_sec = extractor.hms_to_seconds(intro)?;
                 let extracted = ref_selected.clone().extract_audio_range(
                     &extractor,
                     start_sec,
-                    start_sec + length,
+                    start_sec + sample_size,
                 )?;
                 let fp = extracted.generate_fingerprint(&chromaprint)?;
                 intro_fingerprint = Some(fp.fingerprint().to_vec());
@@ -155,12 +161,16 @@ pub fn main() -> Result<()> {
 
             let mut outro_fingerprint = None;
             if let Some(ref outro) = sample_outro {
-                log::info!("Extracting outro sample from reference at {}", outro);
+                log::info!(
+                    "Extracting outro sample ({:.1}s) from reference at {}",
+                    sample_size,
+                    outro
+                );
                 let start_sec = extractor.hms_to_seconds(outro)?;
                 let extracted = ref_selected.clone().extract_audio_range(
                     &extractor,
                     start_sec,
-                    start_sec + length,
+                    start_sec + sample_size,
                 )?;
                 let fp = extracted.generate_fingerprint(&chromaprint)?;
                 outro_fingerprint = Some(fp.fingerprint().to_vec());
