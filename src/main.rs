@@ -71,6 +71,7 @@ pub fn main() -> Result<()> {
             sample_reference,
             sample_size,
             offset,
+            auto_offset,
             length,
             progress,
             threads,
@@ -235,7 +236,7 @@ pub fn main() -> Result<()> {
                                     threshold,
                                 ) {
                                     let start_total =
-                                        segmented_fps.offset_sec() + (idx as f64 * 0.128) + offset;
+                                        segmented_fps.offset_sec() + (idx as f64 * 0.128);
                                     file_res.intro_start = Some(start_total);
                                 }
                             }
@@ -254,7 +255,7 @@ pub fn main() -> Result<()> {
                                     threshold,
                                 ) {
                                     let start_total =
-                                        segmented_fps.offset_sec() + (idx as f64 * 0.128) + offset;
+                                        segmented_fps.offset_sec() + (idx as f64 * 0.128);
                                     file_res.outro_start = Some(start_total);
                                 }
                             }
@@ -278,10 +279,42 @@ pub fn main() -> Result<()> {
                 pb.finish_with_message("Done");
             }
 
+            // Calculate Auto-Offset based on the processed results of the reference file
+            let mut final_intro_offset = offset;
+            let mut final_outro_offset = offset;
+
+            if auto_offset {
+                let ref_filename = ref_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if let Some(ref_res) = results.iter().find(|r| r.filename == ref_filename) {
+                    if let (Some(detected), Some(hms)) = (ref_res.intro_start, &sample_intro) {
+                        let optimal = extractor.hms_to_seconds(hms)?;
+                        let auto_diff = optimal - detected;
+                        log::info!("Auto-offset intro: {:.3}s", auto_diff);
+                        final_intro_offset += auto_diff;
+                    }
+                    if let (Some(detected), Some(hms)) = (ref_res.outro_start, &sample_outro) {
+                        let optimal = extractor.hms_to_seconds(hms)?;
+                        let auto_diff = optimal - detected;
+                        log::info!("Auto-offset outro: {:.3}s", auto_diff);
+                        final_outro_offset += auto_diff;
+                    }
+                }
+            }
+
+            // Apply offsets to ALL results for the JSON file
+            let final_files: Vec<FileResult> = results
+                .into_iter()
+                .map(|mut r| {
+                    r.intro_start = r.intro_start.map(|s| s + final_intro_offset);
+                    r.outro_start = r.outro_start.map(|s| s + final_outro_offset);
+                    r
+                })
+                .collect();
+
             let scan_results = ScanResults {
                 intro_duration: intro_fingerprint.map(|_| length).unwrap_or(0.0),
                 outro_duration: outro_fingerprint.map(|_| length).unwrap_or(0.0),
-                files: results,
+                files: final_files,
             };
 
             let out_file = File::create("results.json").context("Failed to create results.json")?;
