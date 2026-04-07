@@ -305,7 +305,9 @@ pub fn main() -> Result<()> {
             let final_files: Vec<FileResult> = results
                 .into_iter()
                 .map(|mut r| {
-                    r.intro_start = r.intro_start.map(|s| s + final_intro_offset);
+                    r.intro_start = r
+                        .intro_start
+                        .map(|s| if s > 0.0 { s + final_intro_offset } else { s });
                     r.outro_start = r.outro_start.map(|s| s + final_outro_offset);
                     r
                 })
