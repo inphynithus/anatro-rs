@@ -19,18 +19,30 @@ pub enum Commands {
     ///
     /// The target file is processed using search space heuristics (Intro: 0.0-0.25, Outro: 0.7-1.0).
     Scan {
-        /// The path to the media file to process (e.g., an MKV or MP4 episode).
-        #[arg(short = 't', long = "target", value_name = "FILE")]
+        /// The target directory containing media files (.mkv, .mp4) to process.
+        #[arg(long = "target", value_name = "DIR")]
         target: PathBuf,
-        /// The path to the reference sample to search for (e.g., intro_sample.wav).
-        #[arg(short = 's', long = "sample", value_name = "FILE")]
-        sample: PathBuf,
+        /// The timestamp (MM:SS) of the intro in the reference episode.
+        #[arg(long = "sample-intro", value_name = "MM:SS")]
+        sample_intro: Option<String>,
+        /// The timestamp (MM:SS) of the outro in the reference episode.
+        #[arg(long = "sample-outro", value_name = "MM:SS")]
+        sample_outro: Option<String>,
+        /// The reference episode file (name or path) to extract the samples from.
+        #[arg(long = "sample-reference", value_name = "FILE")]
+        sample_reference: String,
         /// Positive or negative offset in seconds to apply to the match result.
         #[arg(short = 'f', long = "offset", default_value_t = 0.0)]
         offset: f64,
         /// The assumed length of the intro/outro in seconds for reporting.
         #[arg(short = 'l', long = "length", default_value_t = 90.0)]
         length: f64,
+        /// Enable progress bar.
+        #[arg(short = 'p', long = "progress")]
+        progress: bool,
+        /// Number of worker threads to use for parallel scanning.
+        #[arg(short = 't', long = "threads", default_value_t = 4)]
+        threads: usize,
     },
     /// Extracts an audio sample from a media file for a given timestamp range.
     SampleExtract {

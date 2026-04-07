@@ -19,16 +19,32 @@
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::matcher::SlidingWindowMatcher;
 use anatro_rs::domain::pipeline::{SearchSpace, SourceMedia};
-use anatro_rs::domain::traits::{
-    AudioExtractor, FingerprintMatcher, Fingerprinter, PcmExporter, TrackSelector,
-};
+use anatro_rs::domain::traits::{FingerprintMatcher, SampleExporter, TrackSelector};
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use rayon::prelude::*;
 use std::env;
+use std::fs::File;
+use std::path::PathBuf;
+
+#[derive(serde::Serialize)]
+struct ScanResults {
+    intro_duration: f64,
+    outro_duration: f64,
+    files: Vec<FileResult>,
+}
+
+#[derive(serde::Serialize)]
+struct FileResult {
+    filename: String,
+    intro_start: Option<f64>,
+    outro_start: Option<f64>,
+}
 
 /// Helper to format seconds into MM:SS.
+#[allow(dead_code)]
 fn format_time(seconds: f64) -> String {
     let total_secs = seconds.round() as i64;
     let mins = total_secs / 60;
@@ -50,100 +66,218 @@ pub fn main() -> Result<()> {
     match cli.command {
         Commands::Scan {
             target,
-            sample,
+            sample_intro,
+            sample_outro,
+            sample_reference,
             offset,
             length,
+            progress,
+            threads,
         } => {
+            if sample_intro.is_none() && sample_outro.is_none() {
+                return Err(anyhow::anyhow!(
+                    "At least one of --sample-intro or --sample-outro must be provided."
+                ));
+            }
+
+            if !target.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "Target must be a directory. Found: {}",
+                    target.display()
+                ));
+            }
+
+            let mut files = Vec::new();
+            for entry in std::fs::read_dir(&target).context("Failed to read target directory")? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file()
+                    && let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        let ext = ext.to_lowercase();
+                        if ext == "mkv" || ext == "mp4" {
+                            files.push(path);
+                        }
+                    }
+            }
+            files.sort();
+
+            if files.is_empty() {
+                log::warn!("No .mkv or .mp4 files found in target directory.");
+                return Ok(());
+            }
+
+            let ref_path = if !sample_reference.contains(std::path::MAIN_SEPARATOR) {
+                let mut found = None;
+                for f in &files {
+                    let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name == sample_reference {
+                        found = Some(f.clone());
+                        break;
+                    }
+                }
+                found.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Reference file '{}' not found in target directory.",
+                        sample_reference
+                    )
+                })?
+            } else {
+                PathBuf::from(&sample_reference)
+            };
+
+            if !ref_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Reference file does not exist: {}",
+                    ref_path.display()
+                ));
+            }
+
+            log::info!("Using reference file: {}", ref_path.display());
+
             let extractor = SymphoniaAdapter::new();
             let chromaprint = ChromaprintAdapter::new();
-            let matcher = SlidingWindowMatcher::new();
 
-            log::info!("Scanning target: {}", target.display());
-            log::info!("Using reference sample: {}", sample.display());
-            if offset != 0.0 {
-                log::info!("Applying user offset: {:.2}s", offset);
+            let ref_source = SourceMedia::new(ref_path.clone());
+            let ref_selected = ref_source.select_track(&extractor)?;
+
+            let mut intro_fingerprint = None;
+            if let Some(ref intro) = sample_intro {
+                log::info!("Extracting intro sample from reference at {}", intro);
+                let start_sec = extractor.hms_to_seconds(intro)?;
+                let extracted = ref_selected.clone().extract_audio_range(
+                    &extractor,
+                    start_sec,
+                    start_sec + length,
+                )?;
+                let fp = extracted.generate_fingerprint(&chromaprint)?;
+                intro_fingerprint = Some(fp.fingerprint().to_vec());
             }
-            log::info!("Reporting detected length: {:.2}s", length);
 
-            // 1. Determine Search Space based on sample name
-            let sample_name = sample.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let space = if sample_name.to_lowercase().contains("intro") {
-                SearchSpace::Intro
-            } else if sample_name.to_lowercase().contains("outro") {
-                SearchSpace::Outro
-            } else {
-                log::warn!("Sample name does not contain 'intro' or 'outro'. Defaulting to Intro.");
-                SearchSpace::Intro
-            };
+            let mut outro_fingerprint = None;
+            if let Some(ref outro) = sample_outro {
+                log::info!("Extracting outro sample from reference at {}", outro);
+                let start_sec = extractor.hms_to_seconds(outro)?;
+                let extracted = ref_selected.clone().extract_audio_range(
+                    &extractor,
+                    start_sec,
+                    start_sec + length,
+                )?;
+                let fp = extracted.generate_fingerprint(&chromaprint)?;
+                outro_fingerprint = Some(fp.fingerprint().to_vec());
+            }
 
-            // 2. Process target episode search space (targeted)
-            let source = SourceMedia::new(target);
-            let selected_track = source.select_track(&extractor)?;
-            let segmented_audio = selected_track.extract_segmented_audio(&extractor, space)?;
-            let segmented_fingerprints =
-                segmented_audio.generate_segmented_fingerprints(&chromaprint)?;
+            let num_threads = threads.min(files.len().max(1));
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()?;
 
-            log::info!(
-                "Episode search space fingerprint generated for {:?} ({} hashes).",
-                space,
-                segmented_fingerprints.fingerprint().len()
-            );
-
-            // 3. Process Reference Sample (Load directly if WAV)
-            let ref_fingerprinted = if sample.extension().and_then(|e| e.to_str()) == Some("wav") {
-                log::info!(
-                    "Loading reference sample directly from WAV: {}",
-                    sample.display()
+            let multi_progress = indicatif::MultiProgress::new();
+            let main_pb = if progress {
+                let pb = multi_progress.add(indicatif::ProgressBar::new(files.len() as u64));
+                pb.set_style(
+                    indicatif::ProgressStyle::default_bar()
+                        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} files ({eta}) {msg}")
+                        .unwrap_or_else(|e| {
+                            log::warn!("Failed to set progress bar template: {}", e);
+                            indicatif::ProgressStyle::default_bar()
+                        }),
                 );
-                let buffer = extractor.load_wav(&sample)?;
-                chromaprint.generate_fingerprint(&buffer)?
+                Some(pb)
             } else {
-                log::info!("Extracting reference sample: {}", sample.display());
-                let ref_source = SourceMedia::new(sample.clone());
-                let ref_selected = ref_source.select_track(&extractor)?;
-                let ref_extracted = ref_selected.extract_audio(&extractor)?;
-                chromaprint.generate_fingerprint(ref_extracted.buffer())?
+                None
             };
 
-            log::info!(
-                "Reference '{}' fingerprint generated ({} hashes).",
-                sample_name,
-                ref_fingerprinted.len()
-            );
+            let results: Vec<FileResult> = pool.install(|| {
+                files
+                    .into_par_iter()
+                    .map(|file| {
+                        let file_name = file
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mut file_res = FileResult {
+                            filename: file_name.clone(),
+                            intro_start: None,
+                            outro_start: None,
+                        };
 
-            // 4. Perform Matching
-            // Use a conservative threshold: 20% bit error rate
-            let threshold = (ref_fingerprinted.len() as u32 * 32) / 5;
+                        let worker_extractor = SymphoniaAdapter::new();
+                        let worker_chromaprint = ChromaprintAdapter::new();
+                        let matcher = SlidingWindowMatcher::new();
 
-            let match_index = matcher.find_match(
-                &ref_fingerprinted,
-                segmented_fingerprints.fingerprint(),
-                threshold,
-            );
+                        let mut process_file = || -> Result<()> {
+                            let source = SourceMedia::new(file.clone());
+                            let selected_track = source.select_track(&worker_extractor)?;
 
-            match match_index {
-                Some(idx) => {
-                    // Heuristic: each hash is approx 0.128s (standard 128ms tick)
-                    let tick_duration = 0.128;
-                    let start_in_space = idx as f64 * tick_duration;
-                    let start_total = segmented_fingerprints.offset_sec() + start_in_space + offset;
+                            if let Some(ref intro_fp) = intro_fingerprint {
+                                let segmented_audio =
+                                    selected_track.clone().extract_segmented_audio(
+                                        &worker_extractor,
+                                        SearchSpace::Intro,
+                                    )?;
+                                let segmented_fps = segmented_audio
+                                    .generate_segmented_fingerprints(&worker_chromaprint)?;
+                                let threshold = (intro_fp.len() as u32 * 32) / 5;
+                                if let Some(idx) = matcher.find_match(
+                                    intro_fp,
+                                    segmented_fps.fingerprint(),
+                                    threshold,
+                                ) {
+                                    let start_total =
+                                        segmented_fps.offset_sec() + (idx as f64 * 0.128) + offset;
+                                    file_res.intro_start = Some(start_total);
+                                }
+                            }
 
-                    let end_total = start_total + length;
+                            if let Some(ref outro_fp) = outro_fingerprint {
+                                let segmented_audio = selected_track.extract_segmented_audio(
+                                    &worker_extractor,
+                                    SearchSpace::Outro,
+                                )?;
+                                let segmented_fps = segmented_audio
+                                    .generate_segmented_fingerprints(&worker_chromaprint)?;
+                                let threshold = (outro_fp.len() as u32 * 32) / 5;
+                                if let Some(idx) = matcher.find_match(
+                                    outro_fp,
+                                    segmented_fps.fingerprint(),
+                                    threshold,
+                                ) {
+                                    let start_total =
+                                        segmented_fps.offset_sec() + (idx as f64 * 0.128) + offset;
+                                    file_res.outro_start = Some(start_total);
+                                }
+                            }
+                            Ok(())
+                        };
 
-                    log::info!(
-                        "MATCH FOUND for '{}'! Range: {} - {} ({:.2}s - {:.2}s) [Duration: {:.2}s]",
-                        sample_name,
-                        format_time(start_total),
-                        format_time(end_total),
-                        start_total,
-                        end_total,
-                        length
-                    );
-                }
-                None => {
-                    log::warn!("No suitable match found for '{}'.", sample_name);
-                }
+                        if let Err(e) = process_file() {
+                            log::warn!("Error processing file {}: {}", file_name, e);
+                        }
+
+                        if let Some(ref pb) = main_pb {
+                            pb.inc(1);
+                        }
+
+                        file_res
+                    })
+                    .collect()
+            });
+
+            if let Some(pb) = main_pb {
+                pb.finish_with_message("Done");
             }
+
+            let scan_results = ScanResults {
+                intro_duration: intro_fingerprint.map(|_| length).unwrap_or(0.0),
+                outro_duration: outro_fingerprint.map(|_| length).unwrap_or(0.0),
+                files: results,
+            };
+
+            let out_file = File::create("results.json").context("Failed to create results.json")?;
+            serde_json::to_writer_pretty(out_file, &scan_results)
+                .context("Failed to write to results.json")?;
+            log::info!("Results successfully written to results.json");
         }
         Commands::SampleExtract {
             target,
@@ -168,35 +302,10 @@ pub fn main() -> Result<()> {
             log::info!("Sample Extract initialized for file: {}", target.display());
             log::info!("Range requested: {}", range);
             log::info!("Output path: {}", final_output.display());
-            log::info!(
-                "NOTE: Extracting in MONO and resampled to 11025Hz for fingerprint compatibility."
-            );
+            log::info!("NOTE: Using sample-accurate PCM extraction with WAV export.");
 
             let track_id = extractor.select_track(&target)?;
-
-            let buffer = if range.contains('-') {
-                let parts: Vec<&str> = range.split('-').collect();
-                if parts.len() != 2 {
-                    return Err(anyhow::anyhow!(
-                        "Range must be in 'HH:MM:SS-HH:MM:SS' format"
-                    ));
-                }
-                let start_sec = extractor.hms_to_seconds(parts[0])?;
-                let end_sec = extractor.hms_to_seconds(parts[1])?;
-                extractor.extract_audio_range(&target, track_id, start_sec, end_sec)?
-            } else if range.contains(',') {
-                let parts: Vec<&str> = range.split(',').collect();
-                if parts.len() != 2 {
-                    return Err(anyhow::anyhow!("Relative range must be 'start,end' floats"));
-                }
-                let start_percent: f64 = parts[0].parse()?;
-                let end_percent: f64 = parts[1].parse()?;
-                extractor.extract_audio_relative(&target, track_id, start_percent, end_percent)?
-            } else {
-                return Err(anyhow::anyhow!("Range format not recognized"));
-            };
-
-            extractor.export_wav(&buffer, &final_output)?;
+            extractor.export_sample(&target, track_id, &final_output, &range)?;
 
             log::info!(
                 "Sample extracted successfully to: {}",

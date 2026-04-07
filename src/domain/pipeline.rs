@@ -6,7 +6,7 @@ use crate::domain::traits::{AudioExtractor, Fingerprinter};
 use std::path::PathBuf;
 
 /// Initial state: a source media file path.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SourceMedia {
     pub(crate) path: PathBuf,
 }
@@ -21,14 +21,14 @@ pub enum SearchSpace {
 }
 
 /// State after track selection.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SelectedTrack {
     pub(crate) path: PathBuf,
     pub(crate) track_id: u32,
 }
 
 /// State after audio extraction: contains buffered audio for a specific search space.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SegmentedAudio {
     pub(crate) path: PathBuf,
     pub(crate) buffer: AudioBuffer,
@@ -37,7 +37,7 @@ pub struct SegmentedAudio {
 }
 
 /// State after fingerprint generation: contains the fingerprint for a specific search space.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SegmentedFingerprints {
     pub(crate) path: PathBuf,
     pub(crate) fingerprint: Vec<u32>,
@@ -46,7 +46,7 @@ pub struct SegmentedFingerprints {
 }
 
 /// State after audio extraction: contains raw samples.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExtractedAudio {
     pub(crate) path: PathBuf,
     pub(crate) buffer: AudioBuffer,
@@ -86,12 +86,32 @@ impl SourceMedia {
 }
 
 impl SelectedTrack {
+    /// Returns the selected track id.
+    pub fn track_id(&self) -> u32 {
+        self.track_id
+    }
+
     /// Transitions to ExtractedAudio state by extracting audio using the provided extractor.
     pub fn extract_audio<E: AudioExtractor>(
         self,
         extractor: &E,
     ) -> Result<ExtractedAudio, DomainError> {
         let buffer = extractor.extract_audio(&self.path, self.track_id)?;
+        Ok(ExtractedAudio {
+            path: self.path,
+            buffer,
+        })
+    }
+
+    /// Transitions to ExtractedAudio state by extracting a specific range.
+    pub fn extract_audio_range<E: AudioExtractor>(
+        self,
+        extractor: &E,
+        start_sec: f64,
+        end_sec: f64,
+    ) -> Result<ExtractedAudio, DomainError> {
+        let buffer =
+            extractor.extract_audio_range(&self.path, self.track_id, start_sec, end_sec)?;
         Ok(ExtractedAudio {
             path: self.path,
             buffer,
