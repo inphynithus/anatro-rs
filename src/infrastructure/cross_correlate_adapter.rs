@@ -5,6 +5,10 @@ use crate::domain::traits::FineMatcher;
 use cross_correlate::{Correlate, CrossCorrelationMode};
 
 /// Adapter for the `cross_correlate` crate.
+///
+/// Applies high-pass filtering and z-score normalization before computing
+/// cross-correlation, ensuring the peak reflects actual similarity rather
+/// than signal energy.
 #[derive(Debug, Default)]
 pub struct CrossCorrelationAdapter;
 
@@ -12,6 +16,32 @@ impl CrossCorrelationAdapter {
     /// Creates a new CrossCorrelationAdapter.
     pub fn new() -> Self {
         Self
+    }
+
+    /// Applies a first-order IIR high-pass filter to remove DC offset and
+    /// low-frequency content that would otherwise dominate the correlation.
+    fn high_pass(data: &[f32]) -> Vec<f32> {
+        let alpha = 0.9;
+        let mut filtered = Vec::with_capacity(data.len());
+        let mut prev_in: f32 = 0.0;
+        let mut prev_out: f32 = 0.0;
+        for &s in data {
+            let out = alpha * (prev_out + s - prev_in);
+            filtered.push(out);
+            prev_in = s;
+            prev_out = out;
+        }
+        filtered
+    }
+
+    /// Applies z-score normalization (mean=0, std=1) so that the
+    /// cross-correlation measures shape similarity independently of amplitude.
+    fn normalize(data: &[f32]) -> Vec<f32> {
+        let len = data.len() as f32;
+        let mean = data.iter().sum::<f32>() / len;
+        let variance = data.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / len;
+        let std_dev = variance.sqrt().max(1e-6);
+        data.iter().map(|&x| (x - mean) / std_dev).collect()
     }
 }
 
@@ -26,8 +56,13 @@ impl FineMatcher for CrossCorrelationAdapter {
         }
 
         // Convert i16 to f32 for processing
-        let src: Vec<f32> = reference.iter().map(|&x| x as f32).collect();
-        let dst: Vec<f32> = target.iter().map(|&x| x as f32).collect();
+        let src_raw: Vec<f32> = reference.iter().map(|&x| x as f32).collect();
+        let dst_raw: Vec<f32> = target.iter().map(|&x| x as f32).collect();
+
+        // Pre-process: high-pass filter removes DC/low-freq dominance,
+        // normalization makes the correlation energy-independent.
+        let src = Self::normalize(&Self::high_pass(&src_raw));
+        let dst = Self::normalize(&Self::high_pass(&dst_raw));
 
         let mode = CrossCorrelationMode::Full;
 

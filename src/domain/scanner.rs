@@ -270,19 +270,63 @@ impl Scanner {
         let ref_selected = ref_source.select_track(&self.extractor)?;
 
         // 2. Extract Reference Fingerprints and Buffers
+        //
+        // Instead of independently extracting and resampling a 10-second clip (which
+        // produces a different sample grid than the targets), we extract the reference
+        // file's full segmented audio for each search space, fingerprint it, then
+        // slice the fingerprint and audio buffer at the position indicated by the user.
+        // This ensures the reference fingerprint is a direct slice of the same pipeline
+        // used for matching, guaranteeing self-scans produce exact matches.
         let mut intro_fp = None;
         let mut intro_buf = None;
         if let Some(ref intro_hms) = options.sample_intro {
             log::info!("Extracting intro sample from reference at {}", intro_hms);
             let start_sec = self.extractor.hms_to_seconds(intro_hms)?;
-            let extracted = ref_selected.clone().extract_audio_range(
-                &self.extractor,
-                start_sec,
-                start_sec + options.sample_size,
-            )?;
-            let fp = extracted.generate_fingerprint(&self.chromaprint)?;
-            intro_fp = Some(fp.fingerprint().to_vec());
-            intro_buf = Some(Arc::new(fp.buffer().samples().to_vec()));
+
+            // Extract the reference file's segmented audio for the Intro search space,
+            // using the same pipeline that targets use.
+            let ref_segmented = ref_selected
+                .clone()
+                .extract_segmented_audio(&self.extractor, SearchSpace::Intro)?;
+            let ref_seg_fps = ref_segmented.generate_segmented_fingerprints(&self.chromaprint)?;
+
+            // Convert the user-supplied timestamp into an index within the segmented
+            // fingerprint array and a sample offset within the audio buffer.
+            let local_sec = start_sec - ref_seg_fps.offset_sec();
+            let fp_start = (local_sec / TICK_DURATION).round() as usize;
+            let sample_size_ticks = (options.sample_size / TICK_DURATION).round() as usize;
+            let fp_end = (fp_start + sample_size_ticks).min(ref_seg_fps.fingerprint().len());
+
+            if fp_start >= ref_seg_fps.fingerprint().len() {
+                return Err(anyhow::anyhow!(
+                    "sample_intro {:.3}s is outside the Intro search space (0..{:.1}s)",
+                    start_sec,
+                    ref_seg_fps.offset_sec()
+                        + ref_seg_fps.fingerprint().len() as f64 * TICK_DURATION
+                ));
+            }
+
+            intro_fp = Some(ref_seg_fps.fingerprint()[fp_start..fp_end].to_vec());
+
+            // Slice the corresponding audio samples.
+            let audio_start = (local_sec * 11025.0).round() as usize;
+            let audio_end = ((local_sec + options.sample_size) * 11025.0).round() as usize;
+            let audio_end = audio_end.min(ref_seg_fps.buffer().samples().len());
+            if audio_start < audio_end {
+                intro_buf = Some(Arc::new(
+                    ref_seg_fps.buffer().samples()[audio_start..audio_end].to_vec(),
+                ));
+            }
+
+            log::debug!(
+                "Reference intro: FP[{}..{}] ({} values), audio[{}..{}] ({} samples)",
+                fp_start,
+                fp_end,
+                fp_end - fp_start,
+                audio_start,
+                audio_end,
+                audio_end - audio_start
+            );
         }
 
         let mut outro_fp = None;
@@ -290,14 +334,45 @@ impl Scanner {
         if let Some(ref outro_hms) = options.sample_outro {
             log::info!("Extracting outro sample from reference at {}", outro_hms);
             let start_sec = self.extractor.hms_to_seconds(outro_hms)?;
-            let extracted = ref_selected.clone().extract_audio_range(
-                &self.extractor,
-                start_sec,
-                start_sec + options.sample_size,
-            )?;
-            let fp = extracted.generate_fingerprint(&self.chromaprint)?;
-            outro_fp = Some(fp.fingerprint().to_vec());
-            outro_buf = Some(Arc::new(fp.buffer().samples().to_vec()));
+
+            let ref_segmented = ref_selected
+                .clone()
+                .extract_segmented_audio(&self.extractor, SearchSpace::Outro)?;
+            let ref_seg_fps = ref_segmented.generate_segmented_fingerprints(&self.chromaprint)?;
+
+            let local_sec = start_sec - ref_seg_fps.offset_sec();
+            let fp_start = (local_sec / TICK_DURATION).round() as usize;
+            let sample_size_ticks = (options.sample_size / TICK_DURATION).round() as usize;
+            let fp_end = (fp_start + sample_size_ticks).min(ref_seg_fps.fingerprint().len());
+
+            if fp_start >= ref_seg_fps.fingerprint().len() {
+                return Err(anyhow::anyhow!(
+                    "sample_outro {:.3}s is outside the Outro search space ({:.1}s..end)",
+                    start_sec,
+                    ref_seg_fps.offset_sec()
+                ));
+            }
+
+            outro_fp = Some(ref_seg_fps.fingerprint()[fp_start..fp_end].to_vec());
+
+            let audio_start = (local_sec * 11025.0).round() as usize;
+            let audio_end = ((local_sec + options.sample_size) * 11025.0).round() as usize;
+            let audio_end = audio_end.min(ref_seg_fps.buffer().samples().len());
+            if audio_start < audio_end {
+                outro_buf = Some(Arc::new(
+                    ref_seg_fps.buffer().samples()[audio_start..audio_end].to_vec(),
+                ));
+            }
+
+            log::debug!(
+                "Reference outro: FP[{}..{}] ({} values), audio[{}..{}] ({} samples)",
+                fp_start,
+                fp_end,
+                fp_end - fp_start,
+                audio_start,
+                audio_end,
+                audio_end - audio_start
+            );
         }
 
         // 3. Setup Thread Pool & Progress
@@ -362,20 +437,57 @@ impl Scanner {
                                 let mut start_total =
                                     segmented_fps.offset_sec() + (idx as f64 * TICK_DURATION);
 
+                                log::debug!(
+                                    "[{}] Coarse: idx={}, time={:.3}s",
+                                    file_name, idx, start_total
+                                );
+
                                 if let Some(ref ref_audio) = intro_buf {
                                     let target_audio = segmented_fps.buffer().samples();
                                     let coarse_sample = idx * CHROMAPRINT_HOP_SAMPLES;
                                     let window_start = coarse_sample.saturating_sub(5 * 11025);
                                     let window_end = (coarse_sample + ref_audio.len() + 5 * 11025)
                                         .min(target_audio.len());
-                                    if window_start < window_end
-                                        && let Ok(Some(lag)) = fine_matcher.find_fine_match(
+
+                                    log::debug!(
+                                        "[{}] Fine window: samples {}..{} ({:.3}s..{:.3}s), ref_len={}, target_len={}",
+                                        file_name,
+                                        window_start, window_end,
+                                        segmented_fps.offset_sec() + window_start as f64 / 11025.0,
+                                        segmented_fps.offset_sec() + window_end as f64 / 11025.0,
+                                        ref_audio.len(),
+                                        target_audio.len()
+                                    );
+
+                                    if window_start < window_end {
+                                        match fine_matcher.find_fine_match(
                                             ref_audio,
                                             &target_audio[window_start..window_end],
-                                        )
-                                    {
-                                        start_total = segmented_fps.offset_sec()
-                                            + ((window_start as isize + lag) as f64 / 11025.0);
+                                        ) {
+                                            Ok(Some(lag)) => {
+                                                let fine_total = segmented_fps.offset_sec()
+                                                    + ((window_start as isize + lag) as f64
+                                                        / 11025.0);
+                                                log::debug!(
+                                                    "[{}] Fine: lag={}, time={:.6}s (correction={:.3}s)",
+                                                    file_name, lag, fine_total,
+                                                    fine_total - start_total
+                                                );
+                                                start_total = fine_total;
+                                            }
+                                            Ok(None) => {
+                                                log::debug!(
+                                                    "[{}] Fine matcher returned None, using coarse",
+                                                    file_name
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log::debug!(
+                                                    "[{}] Fine matcher error: {}, using coarse",
+                                                    file_name, e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 file_res.intro_start = Some(start_total);
