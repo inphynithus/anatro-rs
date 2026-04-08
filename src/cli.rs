@@ -21,7 +21,13 @@ pub enum Commands {
     Scan {
         /// The target directory containing media files (.mkv, .mp4) to process.
         #[arg(long = "target", value_name = "DIR")]
-        target: PathBuf,
+        target: Option<PathBuf>,
+        /// A single target media file to process.
+        #[arg(short = 'f', long = "file", value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Print the results as JSON to stdout instead of exporting to results.json.
+        #[arg(long = "json")]
+        json: bool,
         /// The timestamp (MM:SS) of the intro in the reference episode.
         #[arg(long = "sample-intro", value_name = "MM:SS")]
         sample_intro: Option<String>,
@@ -35,7 +41,7 @@ pub enum Commands {
         #[arg(long = "sample-size", default_value_t = 10.0)]
         sample_size: f64,
         /// Positive or negative offset in seconds to apply to the match result.
-        #[arg(short = 'f', long = "offset", default_value_t = 0.0)]
+        #[arg(long = "offset", default_value_t = 0.0)]
         offset: f64,
         /// Automatically calculate and apply an offset based on the reference episode's match.
         #[arg(long = "auto-offset")]

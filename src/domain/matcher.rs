@@ -4,7 +4,7 @@ use crate::domain::traits::FingerprintMatcher;
 use log::debug;
 
 /// Duration of a single Chromaprint tick in seconds.
-pub const TICK_DURATION: f64 = 0.128;
+pub const TICK_DURATION: f64 = 0.124;
 
 /// Implements a sliding window discrete cross-correlation algorithm.
 #[derive(Debug, Default)]

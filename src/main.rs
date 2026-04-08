@@ -66,6 +66,8 @@ pub fn main() -> Result<()> {
     match cli.command {
         Commands::Scan {
             target,
+            file,
+            json,
             sample_intro,
             sample_outro,
             sample_reference,
@@ -82,35 +84,50 @@ pub fn main() -> Result<()> {
                 ));
             }
 
-            if !target.is_dir() {
+            let mut files = Vec::new();
+
+            if let Some(single_file) = file {
+                if !single_file.exists() {
+                    return Err(anyhow::anyhow!("File not found: {}", single_file.display()));
+                }
+                files.push(single_file);
+            } else if let Some(target_dir) = target {
+                if !target_dir.is_dir() {
+                    return Err(anyhow::anyhow!(
+                        "Target must be a directory. Found: {}",
+                        target_dir.display()
+                    ));
+                }
+
+                for entry in
+                    std::fs::read_dir(&target_dir).context("Failed to read target directory")?
+                {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.is_file() {
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if ext == "mkv" || ext == "mp4" {
+                            files.push(path);
+                        }
+                    }
+                }
+                files.sort();
+            } else {
                 return Err(anyhow::anyhow!(
-                    "Target must be a directory. Found: {}",
-                    target.display()
+                    "Either --target <DIR> or --file <FILE> must be provided."
                 ));
             }
 
-            let mut files = Vec::new();
-            for entry in std::fs::read_dir(&target).context("Failed to read target directory")? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    let ext = path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("")
-                        .to_lowercase();
-                    if ext == "mkv" || ext == "mp4" {
-                        files.push(path);
-                    }
-                }
-            }
-            files.sort();
-
             if files.is_empty() {
-                log::warn!("No .mkv or .mp4 files found in target directory.");
+                log::warn!("No media files found to process.");
                 return Ok(());
             }
 
+            // Reference file resolution
             let ref_path = if !sample_reference.contains(std::path::MAIN_SEPARATOR) {
                 let mut found = None;
                 for f in &files {
@@ -122,7 +139,7 @@ pub fn main() -> Result<()> {
                 }
                 found.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "Reference file '{}' not found in target directory.",
+                        "Reference file '{}' not found in processed files.",
                         sample_reference
                     )
                 })?
@@ -244,12 +261,13 @@ pub fn main() -> Result<()> {
                                     threshold,
                                 ) {
                                     let mut start_total =
-                                        segmented_fps.offset_sec() + (idx as f64 * 0.128);
+                                        segmented_fps.offset_sec() + (idx as f64 * TICK_DURATION);
 
                                     // Fine Match
                                     if let Some(ref ref_buf) = intro_audio_buffer {
                                         let target_buf = segmented_fps.buffer().samples();
-                                        let coarse_sample = (idx as f64 * 0.128 * 11025.0) as usize;
+                                        let coarse_sample =
+                                            (idx as f64 * TICK_DURATION * 11025.0) as usize;
                                         let window_start = coarse_sample.saturating_sub(5 * 11025);
                                         let window_end =
                                             (coarse_sample + ref_buf.len() + 5 * 11025)
@@ -350,8 +368,8 @@ pub fn main() -> Result<()> {
                 }
             }
 
-            // Apply offsets to ALL results for the JSON file
-            let final_files: Vec<FileResult> = results
+            // Apply offsets to ALL results
+            let final_results: Vec<FileResult> = results
                 .into_iter()
                 .map(|mut r| {
                     r.intro_start = r
@@ -365,13 +383,18 @@ pub fn main() -> Result<()> {
             let scan_results = ScanResults {
                 intro_duration: intro_fingerprint.map(|_| length).unwrap_or(0.0),
                 outro_duration: outro_fingerprint.map(|_| length).unwrap_or(0.0),
-                files: final_files,
+                files: final_results,
             };
 
-            let out_file = File::create("results.json").context("Failed to create results.json")?;
-            serde_json::to_writer_pretty(out_file, &scan_results)
-                .context("Failed to write to results.json")?;
-            log::info!("Results successfully written to results.json");
+            if json {
+                println!("{}", serde_json::to_string_pretty(&scan_results)?);
+            } else {
+                let out_file =
+                    File::create("results.json").context("Failed to create results.json")?;
+                serde_json::to_writer_pretty(out_file, &scan_results)
+                    .context("Failed to write to results.json")?;
+                log::info!("Results successfully written to results.json");
+            }
         }
         Commands::SampleExtract {
             target,
