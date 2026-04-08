@@ -31,12 +31,15 @@ impl FineMatcher for CrossCorrelationAdapter {
 
         let mode = CrossCorrelationMode::Full;
 
-        let correlation = Correlate::create_real_f32(src.len(), dst.len(), mode).map_err(|e| {
+        // The crate's `correlate_managed(buffer, other)` matches `numpy.correlate(buffer, other)`.
+        // To find where a short reference (`src`) appears inside a longer target (`dst`),
+        // the target must be passed as `buffer` (first) and the reference as `other` (second).
+        let correlation = Correlate::create_real_f32(dst.len(), src.len(), mode).map_err(|e| {
             DomainError::ExtractionError(format!("Correlation creation failed: {:?}", e))
         })?;
 
         let corr = correlation
-            .correlate_managed(&src, &dst)
+            .correlate_managed(&dst, &src)
             .map_err(|e| DomainError::ExtractionError(format!("Correlation failed: {:?}", e)))?;
 
         // Find the peak correlation index
@@ -49,7 +52,8 @@ impl FineMatcher for CrossCorrelationAdapter {
             }
         }
 
-        // In 'Full' mode, the lag is calculated as max_idx as isize - (src.len() as isize - 1)
+        // In 'Full' mode with correlate_managed(target, reference), the lag that gives
+        // the position in `target` where `reference` starts is: peak - (reference.len() - 1)
         let lag = max_idx as isize - (src.len() as isize - 1);
         Ok(Some(lag))
     }

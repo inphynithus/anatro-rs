@@ -160,13 +160,13 @@ impl Scanner {
         let norm_dst = self.normalize_f32(&self.high_pass_f32(&dst_f32));
 
         let correlation = cross_correlate::Correlate::create_real_f32(
-            norm_src.len(),
             norm_dst.len(),
+            norm_src.len(),
             cross_correlate::CrossCorrelationMode::Full,
         )
         .map_err(|e| anyhow::anyhow!("Correlation creation failed: {:?}", e))?;
         let corr = correlation
-            .correlate_managed(&norm_src, &norm_dst)
+            .correlate_managed(&norm_dst, &norm_src)
             .map_err(|e| anyhow::anyhow!("Correlation failed: {:?}", e))?;
 
         // Find top 5 peaks
