@@ -3,8 +3,17 @@
 use crate::domain::traits::FingerprintMatcher;
 use log::debug;
 
-/// Duration of a single Chromaprint tick in seconds.
-pub const TICK_DURATION: f64 = 0.128;
+/// Chromaprint's internal hop size in samples at 11025 Hz.
+///
+/// Chromaprint uses a 4096-sample FFT frame with overlap of `FRAME_SIZE - FRAME_SIZE / 3`,
+/// yielding a hop (advance) of `FRAME_SIZE / 3 = 4096 / 3 = 1365` samples (integer division).
+/// Source: `test_chromaprint.cpp` in the upstream Chromaprint repository.
+pub const CHROMAPRINT_HOP_SAMPLES: usize = 1365;
+
+/// Duration of a single Chromaprint tick in seconds at 11025 Hz.
+///
+/// Derived from the actual hop size: `1365 / 11025 ≈ 0.12381s`.
+pub const TICK_DURATION: f64 = CHROMAPRINT_HOP_SAMPLES as f64 / 11025.0;
 
 /// Implements a sliding window discrete cross-correlation algorithm.
 #[derive(Debug, Default)]

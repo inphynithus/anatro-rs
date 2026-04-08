@@ -1,6 +1,6 @@
 //! Orchestration logic for scanning media files.
 
-use crate::domain::matcher::{SlidingWindowMatcher, TICK_DURATION};
+use crate::domain::matcher::{CHROMAPRINT_HOP_SAMPLES, SlidingWindowMatcher, TICK_DURATION};
 use crate::domain::pipeline::{SearchSpace, SourceMedia};
 use crate::domain::result::{FileResult, ScanResults};
 use crate::domain::traits::{FineMatcher, FingerprintMatcher};
@@ -127,11 +127,14 @@ impl Scanner {
         let sweep_start = (expected_sec - 15.0).max(0.0);
         let sweep_end = expected_sec + 15.0;
 
-        let sweep_tgt = target_selected
-            .clone()
-            .extract_audio_range(&self.extractor, sweep_start, sweep_end)?;
-        self.extractor
-            .export_wav(sweep_tgt.buffer(), &PathBuf::from("debug_sweep_target_11k.wav"))?;
+        let sweep_tgt =
+            target_selected
+                .clone()
+                .extract_audio_range(&self.extractor, sweep_start, sweep_end)?;
+        self.extractor.export_wav(
+            sweep_tgt.buffer(),
+            &PathBuf::from("debug_sweep_target_11k.wav"),
+        )?;
         log::info!(
             "Exported debug_sweep_target_11k.wav (window: {:.1}s to {:.1}s)",
             sweep_start,
@@ -140,11 +143,17 @@ impl Scanner {
 
         // Pattern: first 2s of 11k reference
         let pattern_len = (2.0 * 11025.0) as usize;
-        let pattern = &ref_audio.buffer().samples()[..pattern_len.min(ref_audio.buffer().samples().len())];
+        let pattern =
+            &ref_audio.buffer().samples()[..pattern_len.min(ref_audio.buffer().samples().len())];
 
         // Manual peak analysis
         let src_f32: Vec<f32> = pattern.iter().map(|&x| x as f32).collect();
-        let dst_f32: Vec<f32> = sweep_tgt.buffer().samples().iter().map(|&x| x as f32).collect();
+        let dst_f32: Vec<f32> = sweep_tgt
+            .buffer()
+            .samples()
+            .iter()
+            .map(|&x| x as f32)
+            .collect();
 
         // Apply pre-processing identical to the adapter
         let norm_src = self.normalize_f32(&self.high_pass_f32(&src_f32));
@@ -177,8 +186,8 @@ impl Scanner {
             );
         }
 
-        let best_peak_ts = sweep_start
-            + ((peaks[0].0 as f64 - (norm_src.len() as f64 - 1.0)) / 11025.0);
+        let best_peak_ts =
+            sweep_start + ((peaks[0].0 as f64 - (norm_src.len() as f64 - 1.0)) / 11025.0);
         if (best_peak_ts - expected_sec).abs() < 0.1 {
             log::info!("SUCCESS: The true peak is the strongest in the 30s sweep window.");
         } else {
@@ -355,8 +364,7 @@ impl Scanner {
 
                                 if let Some(ref ref_audio) = intro_buf {
                                     let target_audio = segmented_fps.buffer().samples();
-                                    let coarse_sample =
-                                        (idx as f64 * TICK_DURATION * 11025.0) as usize;
+                                    let coarse_sample = idx * CHROMAPRINT_HOP_SAMPLES;
                                     let window_start = coarse_sample.saturating_sub(5 * 11025);
                                     let window_end = (coarse_sample + ref_audio.len() + 5 * 11025)
                                         .min(target_audio.len());
@@ -388,8 +396,7 @@ impl Scanner {
 
                                 if let Some(ref ref_audio) = outro_buf {
                                     let target_audio = segmented_fps.buffer().samples();
-                                    let coarse_sample =
-                                        (idx as f64 * TICK_DURATION * 11025.0) as usize;
+                                    let coarse_sample = idx * CHROMAPRINT_HOP_SAMPLES;
                                     let window_start = coarse_sample.saturating_sub(5 * 11025);
                                     let window_end = (coarse_sample + ref_audio.len() + 5 * 11025)
                                         .min(target_audio.len());
