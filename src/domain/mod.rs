@@ -1,10 +1,12 @@
-//! Domain error types for anotro-rs.
+//! Domain types and logic for anotro-rs.
 
 use thiserror::Error;
 
 pub mod audio;
 pub mod matcher;
 pub mod pipeline;
+pub mod result;
+pub mod scanner;
 pub mod traits;
 
 /// Domain-specific errors.

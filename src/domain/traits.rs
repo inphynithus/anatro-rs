@@ -35,6 +35,18 @@ pub trait AudioExtractor {
         start_percent: f64,
         end_percent: f64,
     ) -> Result<AudioBuffer, DomainError>;
+
+    /// Converts HH:MM:SS format to seconds.
+    fn hms_to_seconds(&self, hms: &str) -> Result<f64, DomainError>;
+
+    /// Core extraction method based on start and end time in seconds.
+    fn extract_pcm_secs(
+        &self,
+        path: &Path,
+        track_id: u32,
+        start_sec: f64,
+        end_sec: f64,
+    ) -> Result<AudioBuffer, DomainError>;
 }
 
 /// Port for generating fingerprints from audio buffers.
@@ -65,36 +77,15 @@ pub trait FingerprintMatcher {
     /// or `None` if no suitable match is found.
     fn find_match(&self, reference: &[u32], target: &[u32], threshold: u32) -> Option<usize>;
 }
-pub trait PcmExtractor {
-    /// Core extraction method based on start and end time in seconds.
-    fn extract_pcm_secs(
-        &self,
-        path: &Path,
-        track_id: u32,
-        start_sec: f64,
-        end_sec: f64,
-    ) -> Result<AudioBuffer, DomainError>;
 
-    /// Extracts raw PCM data using HH:MM:SS strings for the timestamp range.
-    fn extract_pcm_range(
+/// Port for high-precision fine matching using cross-correlation.
+pub trait FineMatcher {
+    /// Finds the exact lag (in samples) of the `reference` within the `target` PCM data.
+    ///
+    /// Returns the lag if a match is found, or `None`.
+    fn find_fine_match(
         &self,
-        path: &Path,
-        track_id: u32,
-        range: &str,
-    ) -> Result<AudioBuffer, DomainError>;
-
-    /// Extracts raw PCM data using relative percentages of the track's total duration (0.0 to 1.0).
-    fn extract_pcm_relative(
-        &self,
-        path: &Path,
-        track_id: u32,
-        start_percent: f64,
-        end_percent: f64,
-    ) -> Result<AudioBuffer, DomainError>;
-}
-
-/// Port for exporting extracted PCM data to a WAV file.
-pub trait PcmExporter {
-    /// Exports the audio buffer to a WAV file.
-    fn export_wav(&self, buffer: &AudioBuffer, output: &Path) -> Result<(), DomainError>;
+        reference: &[i16],
+        target: &[i16],
+    ) -> Result<Option<isize>, DomainError>;
 }
