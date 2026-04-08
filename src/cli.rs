@@ -56,6 +56,27 @@ pub enum Commands {
         #[arg(short = 't', long = "threads", default_value_t = 4)]
         threads: usize,
     },
+    /// Detailed debugging of a specific match to find discrepancies.
+    Debug {
+        /// The target media file to process.
+        #[arg(short = 'f', long = "file", value_name = "FILE")]
+        file: PathBuf,
+        /// The expected timestamp in seconds for verification.
+        #[arg(short = 'e', long = "expected", value_name = "SECONDS")]
+        expected: f64,
+        /// The timestamp (HH:MM:SS or seconds) of the intro in the reference episode.
+        #[arg(long = "sample-intro", value_name = "TIMESTAMP")]
+        sample_intro: Option<String>,
+        /// The timestamp (HH:MM:SS or seconds) of the outro in the reference episode.
+        #[arg(long = "sample-outro", value_name = "TIMESTAMP")]
+        sample_outro: Option<String>,
+        /// The reference episode file (path) to extract the samples from.
+        #[arg(long = "sample-reference", value_name = "FILE")]
+        sample_reference: PathBuf,
+        /// The size of the reference sample to extract in seconds.
+        #[arg(long = "sample-size", default_value_t = 10.0)]
+        sample_size: f64,
+    },
     /// Extracts an audio sample from a media file for a given timestamp range.
     SampleExtract {
         /// The path to the media file to process (e.g., an MKV or MP4 episode).

@@ -125,6 +125,28 @@ pub fn main() -> Result<()> {
                 log::info!("Results successfully written to results.json");
             }
         }
+        Commands::Debug {
+            file,
+            expected,
+            sample_intro,
+            sample_outro,
+            sample_reference,
+            sample_size,
+        } => {
+            let scanner = Scanner::new();
+            let options = ScanOptions {
+                sample_intro,
+                sample_outro,
+                sample_reference: sample_reference.to_string_lossy().to_string(),
+                sample_size,
+                offset: 0.0,
+                auto_offset: false,
+                length: 90.0,
+                progress: false,
+                threads: 1,
+            };
+            scanner.run_debug(file, options, expected)?;
+        }
         Commands::SampleExtract {
             target,
             range,
