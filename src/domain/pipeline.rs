@@ -43,6 +43,7 @@ pub struct SegmentedFingerprints {
     pub(crate) fingerprint: Vec<u32>,
     pub(crate) space: SearchSpace,
     pub(crate) offset_sec: f64,
+    pub(crate) buffer: AudioBuffer,
 }
 
 /// State after audio extraction: contains raw samples.
@@ -53,10 +54,11 @@ pub struct ExtractedAudio {
 }
 
 /// State after fingerprint generation: contains the fingerprint.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FingerprintedMedia {
     pub(crate) path: PathBuf,
     pub(crate) fingerprint: Vec<u32>,
+    pub(crate) buffer: AudioBuffer,
 }
 
 /// State after a match operation has been attempted.
@@ -160,6 +162,7 @@ impl SegmentedAudio {
             fingerprint,
             space: self.space,
             offset_sec: self.offset_sec,
+            buffer: self.buffer,
         })
     }
 }
@@ -184,6 +187,11 @@ impl SegmentedFingerprints {
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
+
+    /// Returns a reference to the audio buffer.
+    pub fn buffer(&self) -> &AudioBuffer {
+        &self.buffer
+    }
 }
 
 impl ExtractedAudio {
@@ -196,6 +204,7 @@ impl ExtractedAudio {
         Ok(FingerprintedMedia {
             path: self.path,
             fingerprint,
+            buffer: self.buffer,
         })
     }
 
@@ -228,5 +237,10 @@ impl FingerprintedMedia {
             path: self.path.clone(),
             match_index,
         })
+    }
+
+    /// Returns a reference to the audio buffer.
+    pub fn buffer(&self) -> &AudioBuffer {
+        &self.buffer
     }
 }

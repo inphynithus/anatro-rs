@@ -93,10 +93,12 @@ pub fn main() -> Result<()> {
             for entry in std::fs::read_dir(&target).context("Failed to read target directory")? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_file()
-                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                {
-                    let ext = ext.to_lowercase();
+                if path.is_file() {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
                     if ext == "mkv" || ext == "mp4" {
                         files.push(path);
                     }
@@ -144,6 +146,7 @@ pub fn main() -> Result<()> {
             let ref_selected = ref_source.select_track(&extractor)?;
 
             let mut intro_fingerprint = None;
+            let mut intro_audio_buffer = None;
             if let Some(ref intro) = sample_intro {
                 log::info!(
                     "Extracting intro sample ({:.1}s) from reference at {}",
@@ -158,9 +161,11 @@ pub fn main() -> Result<()> {
                 )?;
                 let fp = extracted.generate_fingerprint(&chromaprint)?;
                 intro_fingerprint = Some(fp.fingerprint().to_vec());
+                intro_audio_buffer = Some(std::sync::Arc::new(fp.buffer().samples().to_vec()));
             }
 
             let mut outro_fingerprint = None;
+            let mut outro_audio_buffer = None;
             if let Some(ref outro) = sample_outro {
                 log::info!(
                     "Extracting outro sample ({:.1}s) from reference at {}",
@@ -175,6 +180,7 @@ pub fn main() -> Result<()> {
                 )?;
                 let fp = extracted.generate_fingerprint(&chromaprint)?;
                 outro_fingerprint = Some(fp.fingerprint().to_vec());
+                outro_audio_buffer = Some(std::sync::Arc::new(fp.buffer().samples().to_vec()));
             }
 
             let num_threads = threads.min(files.len().max(1));
@@ -216,6 +222,8 @@ pub fn main() -> Result<()> {
                         let worker_extractor = SymphoniaAdapter::new();
                         let worker_chromaprint = ChromaprintAdapter::new();
                         let matcher = SlidingWindowMatcher::new();
+                        let fine_matcher =
+                            anatro_rs::domain::matcher::CrossCorrelationMatcher::new();
 
                         let mut process_file = || -> Result<()> {
                             let source = SourceMedia::new(file.clone());
@@ -235,8 +243,28 @@ pub fn main() -> Result<()> {
                                     segmented_fps.fingerprint(),
                                     threshold,
                                 ) {
-                                    let start_total =
+                                    let mut start_total =
                                         segmented_fps.offset_sec() + (idx as f64 * 0.128);
+
+                                    // Fine Match
+                                    if let Some(ref ref_buf) = intro_audio_buffer {
+                                        let target_buf = segmented_fps.buffer().samples();
+                                        let coarse_sample = (idx as f64 * 0.128 * 11025.0) as usize;
+                                        let window_start = coarse_sample.saturating_sub(5 * 11025);
+                                        let window_end =
+                                            (coarse_sample + ref_buf.len() + 5 * 11025)
+                                                .min(target_buf.len());
+                                        if window_start < window_end
+                                            && let Ok(Some(lag)) = fine_matcher.find_fine_match(
+                                                ref_buf,
+                                                &target_buf[window_start..window_end],
+                                            )
+                                        {
+                                            start_total = segmented_fps.offset_sec()
+                                                + ((window_start as isize + lag) as f64 / 11025.0);
+                                        }
+                                    }
+
                                     file_res.intro_start = Some(start_total);
                                 }
                             }
@@ -254,8 +282,28 @@ pub fn main() -> Result<()> {
                                     segmented_fps.fingerprint(),
                                     threshold,
                                 ) {
-                                    let start_total =
+                                    let mut start_total =
                                         segmented_fps.offset_sec() + (idx as f64 * 0.128);
+
+                                    // Fine Match
+                                    if let Some(ref ref_buf) = outro_audio_buffer {
+                                        let target_buf = segmented_fps.buffer().samples();
+                                        let coarse_sample = (idx as f64 * 0.128 * 11025.0) as usize;
+                                        let window_start = coarse_sample.saturating_sub(5 * 11025);
+                                        let window_end =
+                                            (coarse_sample + ref_buf.len() + 5 * 11025)
+                                                .min(target_buf.len());
+                                        if window_start < window_end
+                                            && let Ok(Some(lag)) = fine_matcher.find_fine_match(
+                                                ref_buf,
+                                                &target_buf[window_start..window_end],
+                                            )
+                                        {
+                                            start_total = segmented_fps.offset_sec()
+                                                + ((window_start as isize + lag) as f64 / 11025.0);
+                                        }
+                                    }
+
                                     file_res.outro_start = Some(start_total);
                                 }
                             }

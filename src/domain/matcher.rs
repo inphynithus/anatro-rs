@@ -64,6 +64,86 @@ impl FingerprintMatcher for SlidingWindowMatcher {
     }
 }
 
+use cross_correlate::{Correlate, CrossCorrelateError, CrossCorrelationMode, FftExecutor};
+use num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
+use std::sync::Arc;
+
+/// Finds the exact fine match using cross-correlation.
+#[derive(Debug, Default)]
+pub struct CrossCorrelationMatcher;
+
+impl CrossCorrelationMatcher {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Finds the exact lag (in samples) of the reference within the target window.
+    pub fn find_fine_match(
+        &self,
+        reference: &[i16],
+        target: &[i16],
+    ) -> Result<Option<isize>, String> {
+        if reference.is_empty() || target.is_empty() {
+            return Ok(None);
+        }
+
+        // Convert i16 to f32
+        let src: Vec<f32> = reference.iter().map(|&x| x as f32).collect();
+        let dst: Vec<f32> = target.iter().map(|&x| x as f32).collect();
+
+        let mode = CrossCorrelationMode::Full;
+        let fft_size = mode.fft_size(&src, &dst);
+
+        let mut planner = FftPlanner::<f32>::new();
+        let fft_forward = planner.plan_fft_forward(fft_size);
+        let fft_inverse = planner.plan_fft_inverse(fft_size);
+
+        struct FftCorrelate {
+            executor: Arc<dyn Fft<f32>>,
+        }
+        impl FftExecutor<f32> for FftCorrelate {
+            fn process(&self, in_out: &mut [Complex<f32>]) -> Result<(), CrossCorrelateError> {
+                self.executor.process(in_out);
+                Ok(())
+            }
+            fn length(&self) -> usize {
+                self.executor.len()
+            }
+        }
+
+        let correlation = Correlate::create_real_f32(
+            mode,
+            Box::new(FftCorrelate {
+                executor: fft_forward,
+            }),
+            Box::new(FftCorrelate {
+                executor: fft_inverse,
+            }),
+        )
+        .map_err(|e| format!("Correlation creation failed: {:?}", e))?;
+
+        let corr = correlation
+            .correlate_managed(&src, &dst)
+            .map_err(|e| format!("Correlation failed: {:?}", e))?;
+
+        // The correlate_managed returns an array of correlation values.
+        // We need to find the peak.
+        let mut max_val = f32::MIN;
+        let mut max_idx = 0;
+        for (i, &val) in corr.iter().enumerate() {
+            if val > max_val {
+                max_val = val;
+                max_idx = i;
+            }
+        }
+
+        // In 'Full' mode, the lag is calculated as max_idx - (src.len() - 1)
+        let lag = max_idx as isize - (src.len() as isize - 1);
+        Ok(Some(lag))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
