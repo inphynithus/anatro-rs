@@ -86,11 +86,11 @@ pub fn main() -> Result<()> {
 
             let mut files = Vec::new();
 
-            if let Some(single_file) = file {
+            if let Some(ref single_file) = file {
                 if !single_file.exists() {
                     return Err(anyhow::anyhow!("File not found: {}", single_file.display()));
                 }
-                files.push(single_file);
+                files.push(single_file.clone());
             } else if let Some(target_dir) = target {
                 if !target_dir.is_dir() {
                     return Err(anyhow::anyhow!(
@@ -128,7 +128,12 @@ pub fn main() -> Result<()> {
             }
 
             // Reference file resolution
-            let ref_path = if !sample_reference.contains(std::path::MAIN_SEPARATOR) {
+            let ref_path = if file.is_some() || sample_reference.contains(std::path::MAIN_SEPARATOR)
+            {
+                // If it's a single file scan OR it's clearly a path, use it directly
+                PathBuf::from(&sample_reference)
+            } else {
+                // Otherwise, look for the filename in the collected files from the target directory
                 let mut found = None;
                 for f in &files {
                     let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -143,8 +148,6 @@ pub fn main() -> Result<()> {
                         sample_reference
                     )
                 })?
-            } else {
-                PathBuf::from(&sample_reference)
             };
 
             if !ref_path.exists() {
