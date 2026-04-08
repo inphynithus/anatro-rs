@@ -27,14 +27,16 @@ use std::fs::File;
 
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
-    // Initialize logging: default to 'info' for our app and 'warn' for noisy dependencies.
-    // This can still be overridden by setting the RUST_LOG environment variable.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,symphonia=warn"),
-    )
-    .init();
-
     let cli = Cli::parse();
+
+    // Initialize logging: disabled by default, enabled with --log [level].
+    // RUST_LOG env var always takes precedence for advanced users.
+    let default_filter = match cli.log.as_deref() {
+        Some(level) => format!("{level},symphonia=warn"),
+        None => "off".to_string(),
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&default_filter))
+        .init();
 
     match cli.command {
         Commands::Scan {
@@ -167,16 +169,16 @@ pub fn main() -> Result<()> {
                 final_output = cwd.join(final_output);
             }
 
-            log::info!("Sample Extract initialized for file: {}", target.display());
-            log::info!("Range requested: {}", range);
-            log::info!("Output path: {}", final_output.display());
-            log::info!("NOTE: Using sample-accurate PCM extraction with WAV export.");
+            log::info!("Initializing Sample Extraction");
+            log::info!(" -> Target audio: {}", target.display());
+            log::info!(" -> Range: {}", range);
+            log::info!(" -> Export format: Sample-Accurate PCM to WAV");
 
             let track_id = extractor.select_track(&target)?;
             extractor.export_sample(&target, track_id, &final_output, &range)?;
 
             log::info!(
-                "Sample extracted successfully to: {}",
+                "Successfully exported sample to: {}",
                 final_output.display()
             );
         }

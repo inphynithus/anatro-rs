@@ -7,6 +7,17 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
+    /// Enable logging output. Accepts an optional level: debug, info, warn.
+    /// Defaults to 'info' when the flag is present without a value.
+    #[arg(
+        long = "log",
+        global = true,
+        num_args = 0..=1,
+        default_missing_value = "info",
+        value_name = "LEVEL"
+    )]
+    pub log: Option<String>,
+
     /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,

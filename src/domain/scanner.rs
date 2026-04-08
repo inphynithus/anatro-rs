@@ -264,7 +264,7 @@ impl Scanner {
             ));
         }
 
-        log::info!("Using reference file: {}", ref_path.display());
+        log::debug!("Resolved reference media: {}", ref_path.display());
 
         let ref_source = SourceMedia::new(ref_path.clone());
         let ref_selected = ref_source.select_track(&self.extractor)?;
@@ -280,7 +280,7 @@ impl Scanner {
         let mut intro_fp = None;
         let mut intro_buf = None;
         if let Some(ref intro_hms) = options.sample_intro {
-            log::info!("Extracting intro sample from reference at {}", intro_hms);
+            log::info!("Processing reference intro starting at {}...", intro_hms);
             let start_sec = self.extractor.hms_to_seconds(intro_hms)?;
 
             // Extract the reference file's segmented audio for the Intro search space,
@@ -319,7 +319,7 @@ impl Scanner {
             }
 
             log::debug!(
-                "Reference intro: FP[{}..{}] ({} values), audio[{}..{}] ({} samples)",
+                "Reference intro successfully extracted: FP[{}..{}] ({} values), audio[{}..{}] ({} samples)",
                 fp_start,
                 fp_end,
                 fp_end - fp_start,
@@ -332,7 +332,7 @@ impl Scanner {
         let mut outro_fp = None;
         let mut outro_buf = None;
         if let Some(ref outro_hms) = options.sample_outro {
-            log::info!("Extracting outro sample from reference at {}", outro_hms);
+            log::info!("Processing reference outro starting at {}...", outro_hms);
             let start_sec = self.extractor.hms_to_seconds(outro_hms)?;
 
             let ref_segmented = ref_selected
@@ -365,7 +365,7 @@ impl Scanner {
             }
 
             log::debug!(
-                "Reference outro: FP[{}..{}] ({} values), audio[{}..{}] ({} samples)",
+                "Reference outro successfully extracted: FP[{}..{}] ({} values), audio[{}..{}] ({} samples)",
                 fp_start,
                 fp_end,
                 fp_end - fp_start,
@@ -506,20 +506,57 @@ impl Scanner {
                                 let mut start_total =
                                     segmented_fps.offset_sec() + (idx as f64 * TICK_DURATION);
 
+                                log::debug!(
+                                    "[{}] Outro Coarse: idx={}, time={:.3}s",
+                                    file_name, idx, start_total
+                                );
+
                                 if let Some(ref ref_audio) = outro_buf {
                                     let target_audio = segmented_fps.buffer().samples();
                                     let coarse_sample = idx * CHROMAPRINT_HOP_SAMPLES;
                                     let window_start = coarse_sample.saturating_sub(5 * 11025);
                                     let window_end = (coarse_sample + ref_audio.len() + 5 * 11025)
                                         .min(target_audio.len());
-                                    if window_start < window_end
-                                        && let Ok(Some(lag)) = fine_matcher.find_fine_match(
+
+                                    log::debug!(
+                                        "[{}] Outro Fine window: samples {}..{} ({:.3}s..{:.3}s), ref_len={}, target_len={}",
+                                        file_name,
+                                        window_start, window_end,
+                                        segmented_fps.offset_sec() + window_start as f64 / 11025.0,
+                                        segmented_fps.offset_sec() + window_end as f64 / 11025.0,
+                                        ref_audio.len(),
+                                        target_audio.len()
+                                    );
+
+                                    if window_start < window_end {
+                                        match fine_matcher.find_fine_match(
                                             ref_audio,
                                             &target_audio[window_start..window_end],
-                                        )
-                                    {
-                                        start_total = segmented_fps.offset_sec()
-                                            + ((window_start as isize + lag) as f64 / 11025.0);
+                                        ) {
+                                            Ok(Some(lag)) => {
+                                                let fine_total = segmented_fps.offset_sec()
+                                                    + ((window_start as isize + lag) as f64
+                                                        / 11025.0);
+                                                log::debug!(
+                                                    "[{}] Outro Fine: lag={}, time={:.6}s (correction={:.3}s)",
+                                                    file_name, lag, fine_total,
+                                                    fine_total - start_total
+                                                );
+                                                start_total = fine_total;
+                                            }
+                                            Ok(None) => {
+                                                log::debug!(
+                                                    "[{}] Fine matcher returned None, using coarse",
+                                                    file_name
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log::warn!(
+                                                    "[{}] Fine matcher error: {}, using coarse",
+                                                    file_name, e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 file_res.outro_start = Some(start_total);
