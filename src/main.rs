@@ -17,7 +17,7 @@
 //! A Rust CLI application for audio fingerprinting and matching.
 
 use anatro_rs::cli::{Cli, Commands};
-use anatro_rs::domain::matcher::SlidingWindowMatcher;
+use anatro_rs::domain::matcher::{SlidingWindowMatcher, TICK_DURATION};
 use anatro_rs::domain::pipeline::{SearchSpace, SourceMedia};
 use anatro_rs::domain::traits::{FingerprintMatcher, SampleExporter, TrackSelector};
 use anatro_rs::infrastructure::chromaprint::ChromaprintAdapter;
@@ -283,12 +283,13 @@ pub fn main() -> Result<()> {
                                     threshold,
                                 ) {
                                     let mut start_total =
-                                        segmented_fps.offset_sec() + (idx as f64 * 0.128);
+                                        segmented_fps.offset_sec() + (idx as f64 * TICK_DURATION);
 
                                     // Fine Match
                                     if let Some(ref ref_buf) = outro_audio_buffer {
                                         let target_buf = segmented_fps.buffer().samples();
-                                        let coarse_sample = (idx as f64 * 0.128 * 11025.0) as usize;
+                                        let coarse_sample =
+                                            (idx as f64 * TICK_DURATION * 11025.0) as usize;
                                         let window_start = coarse_sample.saturating_sub(5 * 11025);
                                         let window_end =
                                             (coarse_sample + ref_buf.len() + 5 * 11025)
