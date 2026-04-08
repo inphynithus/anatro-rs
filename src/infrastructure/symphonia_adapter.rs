@@ -36,25 +36,45 @@ impl SymphoniaAdapter {
         Self
     }
 
-    /// Parses HH:MM:SS to seconds.
+    /// Parses HH:MM:SS or a direct float string to seconds.
     pub fn hms_to_seconds(&self, hms: &str) -> Result<f64, DomainError> {
-        let parts: Vec<&str> = hms.split(':').collect();
-        if parts.len() != 3 {
-            return Err(DomainError::InputError(format!(
-                "Invalid timestamp format: {}. Expected HH:MM:SS",
-                hms
-            )));
+        if !hms.contains(':') {
+            return hms.parse::<f64>().map_err(|_| {
+                DomainError::InputError(format!(
+                    "Invalid timestamp format: {}. Expected HH:MM:SS or seconds as float.",
+                    hms
+                ))
+            });
         }
-        let h: f64 = parts[0].parse().map_err(|_| {
-            DomainError::InputError(format!("Invalid hours in timestamp: {}", parts[0]))
-        })?;
-        let m: f64 = parts[1].parse().map_err(|_| {
-            DomainError::InputError(format!("Invalid minutes in timestamp: {}", parts[1]))
-        })?;
-        let s: f64 = parts[2].parse().map_err(|_| {
-            DomainError::InputError(format!("Invalid seconds in timestamp: {}", parts[2]))
-        })?;
-        Ok(h * 3600.0 + m * 60.0 + s)
+
+        let parts: Vec<&str> = hms.split(':').collect();
+        match parts.len() {
+            3 => {
+                let h: f64 = parts[0].parse().map_err(|_| {
+                    DomainError::InputError(format!("Invalid hours in timestamp: {}", parts[0]))
+                })?;
+                let m: f64 = parts[1].parse().map_err(|_| {
+                    DomainError::InputError(format!("Invalid minutes in timestamp: {}", parts[1]))
+                })?;
+                let s: f64 = parts[2].parse().map_err(|_| {
+                    DomainError::InputError(format!("Invalid seconds in timestamp: {}", parts[2]))
+                })?;
+                Ok(h * 3600.0 + m * 60.0 + s)
+            }
+            2 => {
+                let m: f64 = parts[0].parse().map_err(|_| {
+                    DomainError::InputError(format!("Invalid minutes in timestamp: {}", parts[0]))
+                })?;
+                let s: f64 = parts[1].parse().map_err(|_| {
+                    DomainError::InputError(format!("Invalid seconds in timestamp: {}", parts[1]))
+                })?;
+                Ok(m * 60.0 + s)
+            }
+            _ => Err(DomainError::InputError(format!(
+                "Invalid timestamp format: {}. Expected HH:MM:SS, MM:SS or seconds as float.",
+                hms
+            ))),
+        }
     }
 
     /// Helper to probe a file and return format.
