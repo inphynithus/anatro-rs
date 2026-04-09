@@ -1,6 +1,6 @@
 //! Orchestration logic for scanning media files.
 
-use crate::domain::kvfs::{KvFs, fnv1a_64_hex};
+use crate::domain::kvfs::{KvFs, KvFsEntry, fnv1a_64_hex};
 use crate::domain::matcher::{CHROMAPRINT_HOP_SAMPLES, SlidingWindowMatcher, TICK_DURATION};
 use crate::domain::pipeline::{SearchSpace, SourceMedia};
 use crate::domain::result::{FileResult, ScanResults};
@@ -21,6 +21,7 @@ pub struct ScanOptions {
     pub sample_reference: String,
     pub sample_size: f64,
     pub offset: f64,
+    pub force: bool,
     pub json: bool,
     pub length: f64,
     pub progress: bool,
@@ -434,7 +435,7 @@ impl Scanner {
 
         enum ScannerEvent {
             Started(String),
-            Finished(FileResult),
+            Finished(String, KvFsEntry),
         }
 
         let (tx, rx) = mpsc::channel();
@@ -451,49 +452,83 @@ impl Scanner {
                             let _ = fs.mark_processing(&hash);
                         }
                     }
-                    ScannerEvent::Finished(res) => {
+                    ScannerEvent::Finished(filename, entry) => {
                         if let Some(fs) = &kvfs {
-                            let hash = fnv1a_64_hex(&res.filename);
-                            let _ = fs.finalize(
-                                &hash,
-                                res.intro_start,
-                                res.outro_start,
-                                intro_dur,
-                                outro_dur,
-                            );
+                            let hash = fnv1a_64_hex(&filename);
+                            let _ = fs.finalize(&hash, &entry);
                         }
                     }
                 }
             }
         });
 
+        let disable_cache_read = options.json || options.force;
+        let reader_kvfs = if !disable_cache_read {
+            KvFs::new().ok()
+        } else {
+            None
+        };
+
         // 4. Parallel Processing
         let results: Vec<FileResult> = pool.install(|| {
             files
                 .into_par_iter()
-                .map_with(tx, |tx, file| {
+                .map_with((tx, reader_kvfs), |(tx, reader_kvfs), file| {
                     let file_name = file
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
 
-                    let _ = tx.send(ScannerEvent::Started(file_name.clone()));
+                    let hash = fnv1a_64_hex(&file_name);
+                    let mut cached_entry = None;
+                    if let Some(fs) = reader_kvfs {
+                        cached_entry = fs.read_entry(&hash);
+                    }
 
-                    if !thread_bars.is_empty() {
-                        let thread_idx = rayon::current_thread_index().unwrap_or(usize::MAX);
-                        if thread_idx < thread_bars.len() {
-                            let spinner = &thread_bars[thread_idx];
-                            spinner.set_message(file_name.clone());
-                            spinner.tick();
+                    let want_intro = options.sample_intro.is_some();
+                    let want_outro = options.sample_outro.is_some();
+
+                    let mut skip_intro = false;
+                    let mut skip_outro = false;
+
+                    if let Some(ref entry) = cached_entry {
+                        if want_intro {
+                            if entry.intro_start.is_some() {
+                                skip_intro = true;
+                                log::info!("[{}] Intro cached with valid timing, skipping intro matcher", file_name);
+                            } else if entry.intro_duration > 0.0 {
+                                log::info!("[{}] Intro cached as missing (-), re-scanning intro matcher", file_name);
+                            }
+                        }
+
+                        if want_outro {
+                            if entry.outro_start.is_some() {
+                                skip_outro = true;
+                                log::info!("[{}] Outro cached with valid timing, skipping outro matcher", file_name);
+                            } else if entry.outro_duration > 0.0 {
+                                log::info!("[{}] Outro cached as missing (-), re-scanning outro matcher", file_name);
+                            }
                         }
                     }
+
+                    let need_intro = want_intro && !skip_intro;
+                    let need_outro = want_outro && !skip_outro;
+                    let processing_needed = need_intro || need_outro;
 
                     let mut file_res = FileResult {
                         filename: file_name.clone(),
                         intro_start: None,
                         outro_start: None,
                     };
+
+                    if let Some(ref entry) = cached_entry {
+                        file_res.intro_start = entry.intro_start;
+                        file_res.outro_start = entry.outro_start;
+                    }
+
+                    if processing_needed {
+                        let _ = tx.send(ScannerEvent::Started(file_name.clone()));
 
                     // Workers need their own adapters (ports)
                     let worker_extractor = SymphoniaAdapter::new();
@@ -505,7 +540,7 @@ impl Scanner {
                         let source = SourceMedia::new(file.clone());
                         let selected_track = source.select_track(&worker_extractor)?;
 
-                        if let Some(ref ref_fp) = intro_fp {
+                        if let Some(ref_fp) = intro_fp.as_ref().filter(|_| need_intro) {
                             let segmented_audio = selected_track
                                 .clone()
                                 .extract_segmented_audio(&worker_extractor, SearchSpace::Intro)?;
@@ -575,7 +610,7 @@ impl Scanner {
                             }
                         }
 
-                        if let Some(ref ref_fp) = outro_fp {
+                        if let Some(ref_fp) = outro_fp.as_ref().filter(|_| need_outro) {
                             let segmented_audio = selected_track
                                 .extract_segmented_audio(&worker_extractor, SearchSpace::Outro)?;
                             let segmented_fps = segmented_audio
@@ -649,12 +684,13 @@ impl Scanner {
                     if let Err(e) = process_file() {
                         log::warn!("Error processing file {}: {}", file_name, e);
                     }
+                    }
 
                     if !thread_bars.is_empty() {
                         let thread_idx = rayon::current_thread_index().unwrap_or(usize::MAX);
                         if thread_idx < thread_bars.len() {
                             let spinner = &thread_bars[thread_idx];
-                            spinner.set_message("Waiting...");
+                            spinner.set_message(file_name.clone());
                             spinner.tick();
                         }
                     }
@@ -663,7 +699,22 @@ impl Scanner {
                         pb.inc(1);
                     }
 
-                    let _ = tx.send(ScannerEvent::Finished(file_res.clone()));
+                    let mut final_intro_dur = cached_entry.as_ref().map(|c| c.intro_duration).unwrap_or(0.0);
+                    let mut final_outro_dur = cached_entry.as_ref().map(|c| c.outro_duration).unwrap_or(0.0);
+
+                    if need_intro { final_intro_dur = intro_dur; }
+                    if need_outro { final_outro_dur = outro_dur; }
+
+                    let merged_entry = KvFsEntry {
+                        intro_start: file_res.intro_start,
+                        outro_start: file_res.outro_start,
+                        intro_duration: final_intro_dur,
+                        outro_duration: final_outro_dur,
+                    };
+
+                    if processing_needed {
+                        let _ = tx.send(ScannerEvent::Finished(file_name.clone(), merged_entry));
+                    }
 
                     file_res
                 })

@@ -15,7 +15,17 @@ pub fn fnv1a_64_hex(data: &str) -> String {
     format!("{:016X}", hash) // Upper case hex
 }
 
+/// A parsed record of a scanned file natively residing in KV-FS
+#[derive(Debug, Clone)]
+pub struct KvFsEntry {
+    pub intro_start: Option<f64>,
+    pub outro_start: Option<f64>,
+    pub intro_duration: f64,
+    pub outro_duration: f64,
+}
+
 /// Key-Value File System (KV-FS) logic for persisting file scanning outcomes.
+#[derive(Clone)]
 pub struct KvFs {
     dir: PathBuf,
 }
@@ -40,7 +50,7 @@ impl KvFs {
 
     /// Generates the final finalized path for a given hash.
     fn final_path(&self, hash: &str) -> PathBuf {
-        self.dir.join(format!("{}", hash))
+        self.dir.join(hash)
     }
 
     /// Creates an empty `.tmp` file, signaling the file is under processing.
@@ -50,31 +60,69 @@ impl KvFs {
         Ok(())
     }
 
+    /// Reads a cached entry from KV-FS if it exists.
+    pub fn read_entry(&self, hash: &str) -> Option<KvFsEntry> {
+        let path = self.final_path(hash);
+        if !path.exists() {
+            return None;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!(
+                    "KV-FS cache read error: Failed to read '{}': {}",
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        let parts: Vec<&str> = content.trim_end().split('\t').collect();
+        if parts.len() != 4 {
+            log::error!(
+                "KV-FS schema mismatch in file '{}': expected 4 tab-separated values, found {}.",
+                path.display(),
+                parts.len()
+            );
+            return None;
+        }
+
+        let parse_val = |p: &str| -> Option<f64> { if p == "-" { None } else { p.parse().ok() } };
+
+        let entry = KvFsEntry {
+            intro_start: parse_val(parts[0]),
+            outro_start: parse_val(parts[1]),
+            intro_duration: parse_val(parts[2]).unwrap_or(0.0),
+            outro_duration: parse_val(parts[3]).unwrap_or(0.0),
+        };
+
+        log::info!("Successfully loaded KV-FS cache entry for hash: {}", hash);
+
+        Some(entry)
+    }
+
     /// Writes the results to the `.tmp` file using the ASCII schema, then renames to finalize it.
     /// Schema: `<intro_start>\t<outro_start>\t<intro_duration>\t<outro_duration>`
-    pub fn finalize(
-        &self,
-        hash: &str,
-        intro_start: Option<f64>,
-        outro_start: Option<f64>,
-        intro_dur: f64,
-        outro_dur: f64,
-    ) -> Result<()> {
+    pub fn finalize(&self, hash: &str, entry: &KvFsEntry) -> Result<()> {
         let tmp = self.tmp_path(hash);
 
-        let intro_str = intro_start
+        let intro_str = entry
+            .intro_start
             .map(|v| format!("{:.6}", v))
             .unwrap_or_else(|| "-".to_string());
-        let outro_str = outro_start
+        let outro_str = entry
+            .outro_start
             .map(|v| format!("{:.6}", v))
             .unwrap_or_else(|| "-".to_string());
-        let intro_dur_str = if intro_dur > 0.0 {
-            format!("{:.6}", intro_dur)
+        let intro_dur_str = if entry.intro_duration > 0.0 {
+            format!("{:.6}", entry.intro_duration)
         } else {
             "-".to_string()
         };
-        let outro_dur_str = if outro_dur > 0.0 {
-            format!("{:.6}", outro_dur)
+        let outro_dur_str = if entry.outro_duration > 0.0 {
+            format!("{:.6}", entry.outro_duration)
         } else {
             "-".to_string()
         };

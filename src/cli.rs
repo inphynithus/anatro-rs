@@ -54,6 +54,9 @@ pub enum Commands {
         /// Positive or negative offset in seconds to apply to the match result.
         #[arg(long = "offset", default_value_t = 0.0)]
         offset: f64,
+        /// Force re-scan and overwrite existing cached entries in KV-FS.
+        #[arg(long = "force")]
+        force: bool,
         /// The assumed length of the intro/outro in seconds for reporting.
         #[arg(short = 'l', long = "length", default_value_t = 90.0)]
         length: f64,
