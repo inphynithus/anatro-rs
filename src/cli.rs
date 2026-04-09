@@ -36,7 +36,7 @@ pub enum Commands {
         /// A single target media file to process.
         #[arg(short = 'f', long = "file", value_name = "FILE")]
         file: Option<PathBuf>,
-        /// Print the results as JSON to stdout instead of exporting to results.json.
+        /// Print the results as JSON to stdout.
         #[arg(long = "json")]
         json: bool,
         /// The timestamp (MM:SS) of the intro in the reference episode.

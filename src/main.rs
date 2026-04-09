@@ -23,7 +23,6 @@ use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::env;
-use std::fs::File;
 
 /// The main entry point of the application.
 pub fn main() -> Result<()> {
@@ -120,12 +119,6 @@ pub fn main() -> Result<()> {
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&scan_results)?);
-            } else {
-                let out_file =
-                    File::create("results.json").context("Failed to create results.json")?;
-                serde_json::to_writer_pretty(out_file, &scan_results)
-                    .context("Failed to write to results.json")?;
-                log::info!("Results successfully written to results.json");
             }
         }
         Commands::Debug {
