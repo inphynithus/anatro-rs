@@ -35,6 +35,7 @@ impl KvFs {
     pub fn new() -> Result<Self> {
         let mut dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
         dir.push("anatro-rs");
+        dir.push("cache");
 
         if !dir.exists() {
             fs::create_dir_all(&dir)?;
