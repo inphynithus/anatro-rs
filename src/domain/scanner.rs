@@ -1,5 +1,6 @@
 //! Orchestration logic for scanning media files.
 
+use crate::domain::kvfs::{KvFs, fnv1a_64_hex};
 use crate::domain::matcher::{CHROMAPRINT_HOP_SAMPLES, SlidingWindowMatcher, TICK_DURATION};
 use crate::domain::pipeline::{SearchSpace, SourceMedia};
 use crate::domain::result::{FileResult, ScanResults};
@@ -11,6 +12,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc;
 
 /// Options for the scan operation.
 pub struct ScanOptions {
@@ -19,7 +21,7 @@ pub struct ScanOptions {
     pub sample_reference: String,
     pub sample_size: f64,
     pub offset: f64,
-    pub auto_offset: bool,
+    pub json: bool,
     pub length: f64,
     pub progress: bool,
     pub threads: usize,
@@ -419,16 +421,64 @@ impl Scanner {
             None
         };
 
+        let intro_dur = if intro_fp.is_some() {
+            options.length
+        } else {
+            0.0
+        };
+        let outro_dur = if outro_fp.is_some() {
+            options.length
+        } else {
+            0.0
+        };
+
+        enum ScannerEvent {
+            Started(String),
+            Finished(FileResult),
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let kvfs_enabled = !options.json;
+
+        let kvfs_thread = std::thread::spawn(move || {
+            let kvfs = if kvfs_enabled { KvFs::new().ok() } else { None };
+
+            for msg in rx {
+                match msg {
+                    ScannerEvent::Started(filename) => {
+                        if let Some(fs) = &kvfs {
+                            let hash = fnv1a_64_hex(&filename);
+                            let _ = fs.mark_processing(&hash);
+                        }
+                    }
+                    ScannerEvent::Finished(res) => {
+                        if let Some(fs) = &kvfs {
+                            let hash = fnv1a_64_hex(&res.filename);
+                            let _ = fs.finalize(
+                                &hash,
+                                res.intro_start,
+                                res.outro_start,
+                                intro_dur,
+                                outro_dur,
+                            );
+                        }
+                    }
+                }
+            }
+        });
+
         // 4. Parallel Processing
         let results: Vec<FileResult> = pool.install(|| {
             files
                 .into_par_iter()
-                .map(|file| {
+                .map_with(tx, |tx, file| {
                     let file_name = file
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
+
+                    let _ = tx.send(ScannerEvent::Started(file_name.clone()));
 
                     if !thread_bars.is_empty() {
                         let thread_idx = rayon::current_thread_index().unwrap_or(usize::MAX);
@@ -521,7 +571,7 @@ impl Scanner {
                                         }
                                     }
                                 }
-                                file_res.intro_start = Some(start_total);
+                                file_res.intro_start = Some(if start_total > 0.0 { start_total + options.offset } else { start_total });
                             }
                         }
 
@@ -590,7 +640,7 @@ impl Scanner {
                                         }
                                     }
                                 }
-                                file_res.outro_start = Some(start_total);
+                                file_res.outro_start = Some(start_total + options.offset);
                             }
                         }
                         Ok(())
@@ -613,6 +663,8 @@ impl Scanner {
                         pb.inc(1);
                     }
 
+                    let _ = tx.send(ScannerEvent::Finished(file_res.clone()));
+
                     file_res
                 })
                 .collect()
@@ -628,43 +680,13 @@ impl Scanner {
             }
         }
 
-        // 5. Finalize Offsets
-        let mut final_intro_offset = options.offset;
-        let mut final_outro_offset = options.offset;
-
-        if options.auto_offset {
-            let ref_filename = ref_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if let Some(ref_res) = results.iter().find(|r| r.filename == ref_filename) {
-                if let (Some(detected), Some(hms)) = (ref_res.intro_start, &options.sample_intro) {
-                    let optimal = self.extractor.hms_to_seconds(hms)?;
-                    let auto_diff = optimal - detected;
-                    log::info!("Auto-offset intro: {:.3}s", auto_diff);
-                    final_intro_offset += auto_diff;
-                }
-                if let (Some(detected), Some(hms)) = (ref_res.outro_start, &options.sample_outro) {
-                    let optimal = self.extractor.hms_to_seconds(hms)?;
-                    let auto_diff = optimal - detected;
-                    log::info!("Auto-offset outro: {:.3}s", auto_diff);
-                    final_outro_offset += auto_diff;
-                }
-            }
-        }
-
-        let final_files: Vec<FileResult> = results
-            .into_iter()
-            .map(|mut r| {
-                r.intro_start = r
-                    .intro_start
-                    .map(|s| if s > 0.0 { s + final_intro_offset } else { s });
-                r.outro_start = r.outro_start.map(|s| s + final_outro_offset);
-                r
-            })
-            .collect();
+        // 5. Cleanup
+        let _ = kvfs_thread.join();
 
         Ok(ScanResults {
-            intro_duration: intro_fp.map(|_| options.length).unwrap_or(0.0),
-            outro_duration: outro_fp.map(|_| options.length).unwrap_or(0.0),
-            files: final_files,
+            intro_duration: intro_dur,
+            outro_duration: outro_dur,
+            files: results,
         })
     }
 }
