@@ -376,22 +376,43 @@ impl Scanner {
         }
 
         // 3. Setup Thread Pool & Progress
+        let num_threads = options.threads.min(files.len().max(1));
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.threads.min(files.len().max(1)))
+            .num_threads(num_threads)
             .build()?;
 
         let multi_progress = indicatif::MultiProgress::new();
+
+        let mut thread_bars = Vec::new();
+        if options.progress {
+            let num_spinners = num_threads.min(8);
+            for i in 0..num_spinners {
+                let spinner = multi_progress.add(indicatif::ProgressBar::new_spinner());
+                spinner.set_style(
+                    indicatif::ProgressStyle::default_spinner()
+                        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+                        .template("[{elapsed_precise}] {spinner:.green} Worker {prefix:>2}: {msg}")
+                        .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
+                );
+                spinner.set_prefix(format!("{}", i + 1));
+                spinner.set_message("Waiting...");
+                spinner.enable_steady_tick(std::time::Duration::from_millis(150));
+                thread_bars.push(spinner);
+            }
+        }
+
         let main_pb = if options.progress {
             let pb = multi_progress.add(indicatif::ProgressBar::new(files.len() as u64));
             pb.set_style(
                 indicatif::ProgressStyle::default_bar()
                     .template(
-                        "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} files ({eta}) {msg}",
+                        "[{elapsed_precise}]   Overall  : [{bar:40.green/white}] {pos}/{len} files ({eta})",
                     )
                     .unwrap_or_else(|e| {
                         log::warn!("Failed to set progress bar template: {}", e);
                         indicatif::ProgressStyle::default_bar()
-                    }),
+                    })
+                    .progress_chars("=>-"),
             );
             Some(pb)
         } else {
@@ -408,6 +429,16 @@ impl Scanner {
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
+
+                    if !thread_bars.is_empty() {
+                        let thread_idx = rayon::current_thread_index().unwrap_or(usize::MAX);
+                        if thread_idx < thread_bars.len() {
+                            let spinner = &thread_bars[thread_idx];
+                            spinner.set_message(file_name.clone());
+                            spinner.tick();
+                        }
+                    }
+
                     let mut file_res = FileResult {
                         filename: file_name.clone(),
                         intro_start: None,
@@ -569,6 +600,15 @@ impl Scanner {
                         log::warn!("Error processing file {}: {}", file_name, e);
                     }
 
+                    if !thread_bars.is_empty() {
+                        let thread_idx = rayon::current_thread_index().unwrap_or(usize::MAX);
+                        if thread_idx < thread_bars.len() {
+                            let spinner = &thread_bars[thread_idx];
+                            spinner.set_message("Waiting...");
+                            spinner.tick();
+                        }
+                    }
+
                     if let Some(ref pb) = main_pb {
                         pb.inc(1);
                     }
@@ -580,6 +620,12 @@ impl Scanner {
 
         if let Some(pb) = main_pb {
             pb.finish_with_message("Done");
+        }
+
+        if options.progress {
+            for spinner in thread_bars {
+                spinner.finish_and_clear();
+            }
         }
 
         // 5. Finalize Offsets
