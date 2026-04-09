@@ -46,15 +46,24 @@ if [ ! -d "$INSTALL_BIN_DIR" ]; then
 fi
 
 # --- Build & Install ---
-log_step "Building and Installing $APP_NAME..."
-log_info "This may take a moment. Building in release mode..."
+BUILD_BIN="target/release/$APP_NAME"
 
-# Note: cargo install with --root <DIR> automatically puts binaries in <DIR>/bin/
-if cargo install --path . --root "$INSTALL_ROOT" --force; then
-    log_success "Compilation and installation completed."
+if [ -f "$BUILD_BIN" ]; then
+    log_step "Installing Pre-built Binary..."
+    log_info "Found pre-built binary at $BUILD_BIN. Copying to $INSTALL_BIN_DIR..."
+    cp "$BUILD_BIN" "$EXECUTABLE_PATH"
+    log_success "Binary copied successfully."
 else
-    log_error "Installation failed during cargo install."
-    exit 1
+    log_step "Building and Installing $APP_NAME..."
+    log_info "This may take a moment. Building in release mode..."
+    if cargo build --release; then
+        log_success "Compilation completed."
+        log_info "Copying to $INSTALL_BIN_DIR..."
+        cp "$BUILD_BIN" "$EXECUTABLE_PATH"
+    else
+        log_error "Build failed."
+        exit 1
+    fi
 fi
 
 # --- Verification ---
@@ -69,6 +78,15 @@ if [ -f "$EXECUTABLE_PATH" ]; then
         INSTALLED_VERSION=$("$EXECUTABLE_PATH" --version)
         log_success "$APP_NAME ($INSTALLED_VERSION) is successfully installed at:"
         echo -e "          ${BOLD}$EXECUTABLE_PATH${NC}"
+        
+        # --- Cleanup ---
+        log_step "Cleaning up build artifacts..."
+        log_info "Removing target/release directory to free up space..."
+        if rm -rf target/release; then
+            log_success "Cleanup complete."
+        else
+            log_warn "Failed to remove target/release."
+        fi
     else
         log_warn "Binary exists at $EXECUTABLE_PATH but '--version' failed."
     fi
