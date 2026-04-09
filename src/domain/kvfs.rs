@@ -140,6 +140,8 @@ impl KvFs {
         let final_path = self.final_path(hash);
         fs::rename(&tmp, &final_path)?;
 
+        log::info!("Successfully wrote KV-FS cache entry for hash: {}", hash);
+
         Ok(())
     }
 
