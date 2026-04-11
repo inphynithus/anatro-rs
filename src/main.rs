@@ -17,6 +17,7 @@
 //! A Rust CLI application for audio fingerprinting and matching.
 
 use anatro_rs::cli::{Cli, Commands};
+use anatro_rs::domain::preset::PresetManager;
 use anatro_rs::domain::scanner::{ScanOptions, Scanner};
 use anatro_rs::domain::traits::{SampleExporter, TrackSelector};
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
@@ -48,7 +49,7 @@ pub fn main() -> Result<()> {
             sample_size,
             offset,
             force,
-            length,
+            preset,
             progress,
             threads,
         } => {
@@ -102,6 +103,10 @@ pub fn main() -> Result<()> {
             }
 
             let scanner = Scanner::new();
+            let preset_manager = PresetManager::load_or_create()?;
+            let (preset_name, preset_config) = preset_manager.get_preset(preset.as_deref())?;
+            log::info!("Using configuration preset: {}", preset_name);
+
             let options = ScanOptions {
                 sample_intro,
                 sample_outro,
@@ -110,9 +115,9 @@ pub fn main() -> Result<()> {
                 offset,
                 force,
                 json,
-                length,
                 progress,
                 threads,
+                preset: preset_config,
             };
 
             let scan_results = scanner.run_scan(files, options)?;
@@ -130,6 +135,9 @@ pub fn main() -> Result<()> {
             sample_size,
         } => {
             let scanner = Scanner::new();
+            let preset_manager = PresetManager::load_or_create()?;
+            let (preset_name, preset_config) = preset_manager.get_preset(None)?;
+            log::info!("Using configuration preset: {} (debug mode)", preset_name);
             let options = ScanOptions {
                 sample_intro,
                 sample_outro,
@@ -138,9 +146,9 @@ pub fn main() -> Result<()> {
                 offset: 0.0,
                 force: true,
                 json: true,
-                length: 90.0,
                 progress: false,
                 threads: 1,
+                preset: preset_config,
             };
             scanner.run_debug(file, options, expected)?;
         }

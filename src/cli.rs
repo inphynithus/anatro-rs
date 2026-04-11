@@ -57,12 +57,12 @@ pub enum Commands {
         /// Force re-scan and overwrite existing cached entries in KV-FS.
         #[arg(long = "force")]
         force: bool,
-        /// The assumed length of the intro/outro in seconds for reporting.
-        #[arg(short = 'l', long = "length", default_value_t = 90.0)]
-        length: f64,
         /// Enable progress bar.
         #[arg(short = 'p', long = "progress")]
         progress: bool,
+        /// The name of the preset to use for scanning.
+        #[arg(long = "preset", value_name = "NAME")]
+        preset: Option<String>,
         /// Number of worker threads to use for parallel scanning.
         #[arg(short = 't', long = "threads", default_value_t = 4)]
         threads: usize,

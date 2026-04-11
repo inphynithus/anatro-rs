@@ -12,12 +12,12 @@ pub struct SourceMedia {
 }
 
 /// Defines the search space heuristics for audio matching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SearchSpace {
-    /// Intro range: 0.0-0.25
-    Intro,
-    /// Outro range: 0.75-1.0
-    Outro,
+    /// Intro range defined by boundaries.
+    Intro([f64; 2]),
+    /// Outro range defined by boundaries.
+    Outro([f64; 2]),
 }
 
 /// State after track selection.
@@ -120,15 +120,15 @@ impl SelectedTrack {
         })
     }
 
-    /// Transitions to SegmentedAudio state using a targeted search space heuristic.
+    /// Transitions to SegmentedAudio state using a targeted search space boundary.
     pub fn extract_segmented_audio<E: AudioExtractor>(
         self,
         extractor: &E,
         space: SearchSpace,
     ) -> Result<SegmentedAudio, DomainError> {
         let (start_percent, end_percent) = match space {
-            SearchSpace::Intro => (0.0, 0.25),
-            SearchSpace::Outro => (0.75, 1.0),
+            SearchSpace::Intro(bounds) => (bounds[0], bounds[1]),
+            SearchSpace::Outro(bounds) => (bounds[0], bounds[1]),
         };
 
         let total_duration = extractor.get_duration(&self.path, self.track_id)?;

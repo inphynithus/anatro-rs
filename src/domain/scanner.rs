@@ -23,9 +23,9 @@ pub struct ScanOptions {
     pub offset: f64,
     pub force: bool,
     pub json: bool,
-    pub length: f64,
     pub progress: bool,
     pub threads: usize,
+    pub preset: crate::domain::preset::Preset,
 }
 
 /// The main orchestrator for the scanning process.
@@ -73,9 +73,9 @@ impl Scanner {
 
         // 2. Extract Reference
         let (ref_hms, space) = if let Some(ref h) = options.sample_intro {
-            (h, SearchSpace::Intro)
+            (h, SearchSpace::Intro(options.preset.intro.search_bounds))
         } else if let Some(ref h) = options.sample_outro {
-            (h, SearchSpace::Outro)
+            (h, SearchSpace::Outro(options.preset.outro.search_bounds))
         } else {
             return Err(anyhow::anyhow!(
                 "Either --sample-intro or --sample-outro must be provided for debug."
@@ -288,9 +288,10 @@ impl Scanner {
 
             // Extract the reference file's segmented audio for the Intro search space,
             // using the same pipeline that targets use.
-            let ref_segmented = ref_selected
-                .clone()
-                .extract_segmented_audio(&self.extractor, SearchSpace::Intro)?;
+            let ref_segmented = ref_selected.clone().extract_segmented_audio(
+                &self.extractor,
+                SearchSpace::Intro(options.preset.intro.search_bounds),
+            )?;
             let ref_seg_fps = ref_segmented.generate_segmented_fingerprints(&self.chromaprint)?;
 
             // Convert the user-supplied timestamp into an index within the segmented
@@ -338,9 +339,10 @@ impl Scanner {
             log::info!("Processing reference outro starting at {}...", outro_hms);
             let start_sec = self.extractor.hms_to_seconds(outro_hms)?;
 
-            let ref_segmented = ref_selected
-                .clone()
-                .extract_segmented_audio(&self.extractor, SearchSpace::Outro)?;
+            let ref_segmented = ref_selected.clone().extract_segmented_audio(
+                &self.extractor,
+                SearchSpace::Outro(options.preset.outro.search_bounds),
+            )?;
             let ref_seg_fps = ref_segmented.generate_segmented_fingerprints(&self.chromaprint)?;
 
             let local_sec = start_sec - ref_seg_fps.offset_sec();
@@ -423,12 +425,12 @@ impl Scanner {
         };
 
         let intro_dur = if intro_fp.is_some() {
-            options.length
+            options.preset.intro.intro_duration
         } else {
             0.0
         };
         let outro_dur = if outro_fp.is_some() {
-            options.length
+            options.preset.outro.outro_duration
         } else {
             0.0
         };
@@ -543,7 +545,7 @@ impl Scanner {
                         if let Some(ref_fp) = intro_fp.as_ref().filter(|_| need_intro) {
                             let segmented_audio = selected_track
                                 .clone()
-                                .extract_segmented_audio(&worker_extractor, SearchSpace::Intro)?;
+                                .extract_segmented_audio(&worker_extractor, SearchSpace::Intro(options.preset.intro.search_bounds))?;
                             let segmented_fps = segmented_audio
                                 .generate_segmented_fingerprints(&worker_chromaprint)?;
                             let threshold = (ref_fp.len() as u32 * 32) / 5;
@@ -606,13 +608,13 @@ impl Scanner {
                                         }
                                     }
                                 }
-                                file_res.intro_start = Some(if start_total > 0.0 { start_total + options.offset } else { start_total });
+                                file_res.intro_start = Some(if start_total > 0.0 { start_total + options.offset + options.preset.intro.offset } else { start_total });
                             }
                         }
 
                         if let Some(ref_fp) = outro_fp.as_ref().filter(|_| need_outro) {
                             let segmented_audio = selected_track
-                                .extract_segmented_audio(&worker_extractor, SearchSpace::Outro)?;
+                                .extract_segmented_audio(&worker_extractor, SearchSpace::Outro(options.preset.outro.search_bounds))?;
                             let segmented_fps = segmented_audio
                                 .generate_segmented_fingerprints(&worker_chromaprint)?;
                             let threshold = (ref_fp.len() as u32 * 32) / 5;
@@ -675,7 +677,7 @@ impl Scanner {
                                         }
                                     }
                                 }
-                                file_res.outro_start = Some(start_total + options.offset);
+                                file_res.outro_start = Some(start_total + options.offset + options.preset.outro.offset);
                             }
                         }
                         Ok(())

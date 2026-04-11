@@ -6,6 +6,7 @@ pub mod audio;
 pub mod kvfs;
 pub mod matcher;
 pub mod pipeline;
+pub mod preset;
 pub mod result;
 pub mod scanner;
 pub mod traits;
