@@ -25,7 +25,9 @@ symphonia = { version = "0.5.5", features = ["all"] }
 thiserror = "2.0.18"
 
 [profile.release]
+opt-level = 3
 lto = "fat"
 codegen-units = 1
-opt-level = 3
 panic = "abort"
+strip = "symbols"
+debug = false
