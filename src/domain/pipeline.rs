@@ -78,8 +78,9 @@ impl SourceMedia {
     pub fn select_track<S: crate::domain::traits::TrackSelector>(
         self,
         selector: &S,
+        track_index: Option<usize>,
     ) -> Result<SelectedTrack, DomainError> {
-        let track_id = selector.select_track(&self.path)?;
+        let track_id = selector.select_track(&self.path, track_index)?;
         Ok(SelectedTrack {
             path: self.path,
             track_id,

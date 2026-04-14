@@ -6,8 +6,14 @@ use std::path::Path;
 
 /// Port for track selection.
 pub trait TrackSelector {
-    /// Selects an audio track from the media file.
-    fn select_track(&self, path: &Path) -> Result<u32, DomainError>;
+    /// Evaluates the media file and prompts the user to select an audio track index if there are multiple.
+    /// If there is only one, returns 0. If `None` tracks, errors out.
+    fn prompt_track_index(&self, path: &Path) -> Result<usize, DomainError>;
+
+    /// Selects an audio track from the media file. If `track_index` is provided, selects that specific 
+    /// audio track index (0-based). If `None`, it should prompt the user if there are multiple tracks.
+    /// Returns the internal track ID `u32`.
+    fn select_track(&self, path: &Path, track_index: Option<usize>) -> Result<u32, DomainError>;
 }
 
 /// Port for extracting audio from media files.

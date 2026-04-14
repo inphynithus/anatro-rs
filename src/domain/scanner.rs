@@ -4,7 +4,7 @@ use crate::domain::kvfs::{KvFs, KvFsEntry, fnv1a_64_hex};
 use crate::domain::matcher::{CHROMAPRINT_HOP_SAMPLES, SlidingWindowMatcher, TICK_DURATION};
 use crate::domain::pipeline::{SearchSpace, SourceMedia};
 use crate::domain::result::{FileResult, ScanResults};
-use crate::domain::traits::{FineMatcher, FingerprintMatcher};
+use crate::domain::traits::{FineMatcher, FingerprintMatcher, TrackSelector};
 use crate::infrastructure::chromaprint::ChromaprintAdapter;
 use crate::infrastructure::cross_correlate_adapter::CrossCorrelationAdapter;
 use crate::infrastructure::symphonia_adapter::SymphoniaAdapter;
@@ -26,6 +26,7 @@ pub struct ScanOptions {
     pub progress: bool,
     pub threads: usize,
     pub preset: crate::domain::preset::Preset,
+    pub track: Option<usize>,
 }
 
 /// The main orchestrator for the scanning process.
@@ -67,9 +68,9 @@ impl Scanner {
         }
 
         let ref_source = SourceMedia::new(ref_path.clone());
-        let ref_selected = ref_source.select_track(&self.extractor)?;
+        let ref_selected = ref_source.select_track(&self.extractor, options.track)?;
         let target_source = SourceMedia::new(target_path.clone());
-        let target_selected = target_source.select_track(&self.extractor)?;
+        let target_selected = target_source.select_track(&self.extractor, options.track)?;
 
         // 2. Extract Reference
         let (ref_hms, space) = if let Some(ref h) = options.sample_intro {
@@ -269,8 +270,13 @@ impl Scanner {
 
         log::debug!("Resolved reference media: {}", ref_path.display());
 
+        let mut global_track_index = options.track;
+        if global_track_index.is_none() {
+            global_track_index = Some(self.extractor.prompt_track_index(&ref_path)?);
+        }
+
         let ref_source = SourceMedia::new(ref_path.clone());
-        let ref_selected = ref_source.select_track(&self.extractor)?;
+        let ref_selected = ref_source.select_track(&self.extractor, global_track_index)?;
 
         // 2. Extract Reference Fingerprints and Buffers
         //
@@ -540,7 +546,7 @@ impl Scanner {
 
                     let mut process_file = || -> Result<()> {
                         let source = SourceMedia::new(file.clone());
-                        let selected_track = source.select_track(&worker_extractor)?;
+                        let selected_track = source.select_track(&worker_extractor, global_track_index)?;
 
                         if let Some(ref_fp) = intro_fp.as_ref().filter(|_| need_intro) {
                             let segmented_audio = selected_track

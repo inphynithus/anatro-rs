@@ -66,6 +66,9 @@ pub enum Commands {
         /// Number of worker threads to use for parallel scanning.
         #[arg(short = 't', long = "threads", default_value_t = 4)]
         threads: usize,
+        /// The audio track index to use (e.g., 0 for the first audio track).
+        #[arg(long = "track")]
+        track: Option<usize>,
     },
     /// Detailed debugging of a specific match to find discrepancies.
     Debug {
@@ -87,6 +90,9 @@ pub enum Commands {
         /// The size of the reference sample to extract in seconds.
         #[arg(long = "sample-size", default_value_t = 10.0)]
         sample_size: f64,
+        /// The audio track index to use (e.g., 0 for the first audio track).
+        #[arg(long = "track")]
+        track: Option<usize>,
     },
     /// Extracts an audio sample from a media file for a given timestamp range.
     SampleExtract {
@@ -99,5 +105,8 @@ pub enum Commands {
         /// The path to save the extracted sample.
         #[arg(short = 'o', long = "output", value_name = "FILE")]
         output: PathBuf,
+        /// The audio track index to use (e.g., 0 for the first audio track).
+        #[arg(long = "track")]
+        track: Option<usize>,
     },
 }

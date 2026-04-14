@@ -308,13 +308,17 @@ impl SymphoniaAdapter {
 }
 
 impl TrackSelector for SymphoniaAdapter {
-    fn select_track(&self, path: &Path) -> Result<u32, DomainError> {
+    fn prompt_track_index(&self, path: &Path) -> Result<usize, DomainError> {
         let format = self.probe_file(path)?;
 
+        // Filter only audio tracks
         let tracks: Vec<_> = format
             .tracks()
             .iter()
-            .filter(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+            .filter(|t| {
+                t.codec_params.codec != CODEC_TYPE_NULL
+                    && (t.codec_params.channels.is_some() || t.codec_params.sample_rate.is_some())
+            })
             .collect();
 
         if tracks.is_empty() {
@@ -324,15 +328,17 @@ impl TrackSelector for SymphoniaAdapter {
         }
 
         if tracks.len() == 1 {
-            return Ok(tracks[0].id);
+            return Ok(0);
         }
 
         let options: Vec<String> = tracks
             .iter()
             .map(|t| {
+                let lang = t.language.as_deref().unwrap_or("Unknown");
                 format!(
-                    "Track {}: {} channels, {} Hz",
+                    "Track {} ({}): {} channels, {} Hz",
                     t.id,
+                    lang,
                     t.codec_params.channels.map(|c| c.count()).unwrap_or(0),
                     t.codec_params.sample_rate.unwrap_or(0)
                 )
@@ -346,7 +352,42 @@ impl TrackSelector for SymphoniaAdapter {
             .interact()
             .map_err(|e| DomainError::InputError(e.to_string()))?;
 
-        Ok(tracks[selection].id)
+        Ok(selection)
+    }
+
+    fn select_track(&self, path: &Path, track_index: Option<usize>) -> Result<u32, DomainError> {
+        let format = self.probe_file(path)?;
+
+        // Filter only audio tracks
+        let tracks: Vec<_> = format
+            .tracks()
+            .iter()
+            .filter(|t| {
+                t.codec_params.codec != CODEC_TYPE_NULL
+                    && (t.codec_params.channels.is_some() || t.codec_params.sample_rate.is_some())
+            })
+            .collect();
+
+        if tracks.is_empty() {
+            return Err(DomainError::ExtractionError(
+                "No audio tracks found".to_string(),
+            ));
+        }
+
+        let idx = match track_index {
+            Some(i) => i,
+            None => self.prompt_track_index(path)?,
+        };
+
+        if idx < tracks.len() {
+            Ok(tracks[idx].id)
+        } else {
+            Err(DomainError::InputError(format!(
+                "Track index {} is out of bounds. Found {} audio tracks.",
+                idx,
+                tracks.len()
+            )))
+        }
     }
 }
 

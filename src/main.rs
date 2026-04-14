@@ -52,6 +52,7 @@ pub fn main() -> Result<()> {
             preset,
             progress,
             threads,
+            track,
         } => {
             if sample_intro.is_none() && sample_outro.is_none() {
                 return Err(anyhow::anyhow!(
@@ -118,6 +119,7 @@ pub fn main() -> Result<()> {
                 progress,
                 threads,
                 preset: preset_config,
+                track,
             };
 
             let scan_results = scanner.run_scan(files, options)?;
@@ -133,6 +135,7 @@ pub fn main() -> Result<()> {
             sample_outro,
             sample_reference,
             sample_size,
+            track,
         } => {
             let scanner = Scanner::new();
             let preset_manager = PresetManager::load_or_create()?;
@@ -149,6 +152,7 @@ pub fn main() -> Result<()> {
                 progress: false,
                 threads: 1,
                 preset: preset_config,
+                track,
             };
             scanner.run_debug(file, options, expected)?;
         }
@@ -156,6 +160,7 @@ pub fn main() -> Result<()> {
             target,
             range,
             output,
+            track,
         } => {
             let extractor = SymphoniaAdapter::new();
 
@@ -177,7 +182,7 @@ pub fn main() -> Result<()> {
             log::info!(" -> Range: {}", range);
             log::info!(" -> Export format: Sample-Accurate PCM to WAV");
 
-            let track_id = extractor.select_track(&target)?;
+            let track_id = extractor.select_track(&target, track)?;
             extractor.export_sample(&target, track_id, &final_output, &range)?;
 
             log::info!(
