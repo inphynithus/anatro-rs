@@ -26,9 +26,13 @@ pub struct Cli {
 /// The available subcommands for the application.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Scans a target media file to find a match for a given reference sample.
+    /// Scans target media files to find a match for a given reference sample.
     ///
-    /// The target file is processed using search space heuristics (Intro: 0.0-0.25, Outro: 0.7-1.0).
+    /// The search space is configured via a preset (see `--preset`). When no preset is
+    /// specified, the first entry defined in `presets.json` is used as the default.
+    /// Presets define the intro/outro search bounds and expected durations.
+    ///
+    /// To view or edit presets, see: `~/.config/anatro-rs/presets.json`
     Scan {
         /// The target directory containing media files (.mkv, .mp4) to process.
         #[arg(long = "target", value_name = "DIR")]
@@ -71,6 +75,9 @@ pub enum Commands {
         track: Option<usize>,
     },
     /// Detailed debugging of a specific match to find discrepancies.
+    ///
+    /// **Available only in dev builds** (`--features dev`).
+    #[cfg(feature = "dev")]
     Debug {
         /// The target media file to process.
         #[arg(short = 'f', long = "file", value_name = "FILE")]
@@ -95,6 +102,9 @@ pub enum Commands {
         track: Option<usize>,
     },
     /// Extracts an audio sample from a media file for a given timestamp range.
+    ///
+    /// **Available only in dev builds** (`--features dev`).
+    #[cfg(feature = "dev")]
     SampleExtract {
         /// The path to the media file to process (e.g., an MKV or MP4 episode).
         #[arg(short = 't', long = "target", value_name = "FILE")]
@@ -108,5 +118,17 @@ pub enum Commands {
         /// The audio track index to use (e.g., 0 for the first audio track).
         #[arg(long = "track")]
         track: Option<usize>,
+    },
+    /// Checks whether a media file has a cached entry in the KV-FS database.
+    ///
+    /// Computes the file's FNV-1a hash and looks it up in `~/.config/anatro-rs/cache/`.
+    /// Exits with code `0` if the entry is found, `1` if it is not.
+    Check {
+        /// The media file to look up.
+        #[arg(short = 'f', long = "file", value_name = "FILE")]
+        file: PathBuf,
+        /// Print the cached entry as JSON to stdout.
+        #[arg(long = "json")]
+        json: bool,
     },
 }

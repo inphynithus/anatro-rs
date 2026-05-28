@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 
@@ -16,7 +17,7 @@ pub fn fnv1a_64_hex(data: &str) -> String {
 }
 
 /// A parsed record of a scanned file natively residing in KV-FS
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct KvFsEntry {
     pub intro_start: Option<f64>,
     pub outro_start: Option<f64>,

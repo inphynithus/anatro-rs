@@ -19,10 +19,15 @@
 use anatro_rs::cli::{Cli, Commands};
 use anatro_rs::domain::preset::PresetManager;
 use anatro_rs::domain::scanner::{ScanOptions, Scanner};
-use anatro_rs::domain::traits::{SampleExporter, TrackSelector};
+#[cfg(feature = "dev")]
+use anatro_rs::domain::traits::TrackSelector;
+#[cfg(feature = "dev")]
+use anatro_rs::domain::traits::SampleExporter;
+#[cfg(feature = "dev")]
 use anatro_rs::infrastructure::symphonia_adapter::SymphoniaAdapter;
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(feature = "dev")]
 use std::env;
 
 /// The main entry point of the application.
@@ -128,6 +133,7 @@ pub fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&scan_results)?);
             }
         }
+        #[cfg(feature = "dev")]
         Commands::Debug {
             file,
             expected,
@@ -156,6 +162,7 @@ pub fn main() -> Result<()> {
             };
             scanner.run_debug(file, options, expected)?;
         }
+        #[cfg(feature = "dev")]
         Commands::SampleExtract {
             target,
             range,
@@ -189,6 +196,67 @@ pub fn main() -> Result<()> {
                 "Successfully exported sample to: {}",
                 final_output.display()
             );
+        }
+        Commands::Check { file, json } => {
+            use anatro_rs::domain::kvfs::{fnv1a_64_hex, KvFs, KvFsEntry};
+
+            /// JSON-serializable output for the `check` subcommand.
+            /// The `cached` field is always present; `entry` is `null` when not found.
+            #[derive(serde::Serialize)]
+            struct CheckOutput<'a> {
+                hash: &'a str,
+                cached: bool,
+                entry: Option<&'a KvFsEntry>,
+            }
+
+            // The scanner keys KV-FS entries by the bare file name only (not the full path).
+            // We must use the same input to produce a matching hash.
+            // See: domain/scanner.rs — `file.file_name()` at the parallel processing stage.
+            if !file.exists() {
+                return Err(anyhow::anyhow!("File not found: {}", file.display()));
+            }
+            let file_name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid file name: {}", file.display()))?;
+            let hash = fnv1a_64_hex(file_name);
+            let kvfs = KvFs::new()?;
+
+            match kvfs.read_entry(&hash) {
+                Some(entry) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&CheckOutput {
+                                hash: &hash,
+                                cached: true,
+                                entry: Some(&entry),
+                            })?
+                        );
+                    } else {
+                        println!("\u{2713} Cached  [{}]", hash);
+                        println!("  intro_start:    {:?}", entry.intro_start);
+                        println!("  outro_start:    {:?}", entry.outro_start);
+                        println!("  intro_duration: {:.2}s", entry.intro_duration);
+                        println!("  outro_duration: {:.2}s", entry.outro_duration);
+                    }
+                }
+                None => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&CheckOutput {
+                                hash: &hash,
+                                cached: false,
+                                entry: None,
+                            })?
+                        );
+                    } else {
+                        eprintln!("\u{2717} Not cached  [{}]", hash);
+                    }
+                    std::process::exit(1);
+                }
+            }
         }
     }
 
